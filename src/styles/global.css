@@ -231,6 +231,25 @@ body {
   font-size: 12px;
 }
 
+/* ===== Error Toast ===== */
+.error-toast {
+  margin: 0 12px;
+  padding: 10px 14px;
+  background: rgba(233, 69, 96, 0.15);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-hover);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ===== Main Content ===== */
 .main-content {
   flex: 1;

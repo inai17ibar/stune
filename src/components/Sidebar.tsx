@@ -11,7 +11,14 @@ export default function Sidebar() {
     isScanning,
     setIsScanning,
     setLibrary,
+    errorMessage,
+    setErrorMessage,
   } = useStore();
+
+  const showError = (msg: string) => {
+    setErrorMessage(msg);
+    setTimeout(() => setErrorMessage(null), 5000);
+  };
 
   const handleAddFolder = async () => {
     if (!window.stune) return;
@@ -21,10 +28,14 @@ export default function Sidebar() {
     setIsScanning(true);
     try {
       const lib = await window.stune.addLibraryFolder(folder);
+      if (lib.tracks.length === 0) {
+        showError('音楽ファイルが見つかりませんでした。フォルダを確認してください。');
+      }
       setLibrary(lib);
       setViewMode('library');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to add library folder:', err);
+      showError(`ライブラリの追加に失敗しました: ${err?.message || err}`);
     } finally {
       setIsScanning(false);
     }
@@ -36,8 +47,9 @@ export default function Sidebar() {
     try {
       const lib = await window.stune.rescanLibrary();
       setLibrary(lib);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to rescan library:', err);
+      showError(`再スキャンに失敗しました: ${err?.message || err}`);
     } finally {
       setIsScanning(false);
     }
@@ -48,8 +60,9 @@ export default function Sidebar() {
     try {
       const lib = await window.stune.removeLibraryFolder(folderPath);
       setLibrary(lib);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to remove folder:', err);
+      showError(`フォルダの削除に失敗しました: ${err?.message || err}`);
     }
   };
 
@@ -59,8 +72,9 @@ export default function Sidebar() {
     try {
       const fullDevice = await window.stune.scanDevice(device.mountPath);
       setActiveDevice(fullDevice);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to scan device:', err);
+      showError(`デバイスのスキャンに失敗しました: ${err?.message || err}`);
     } finally {
       setIsScanning(false);
     }
@@ -155,6 +169,12 @@ export default function Sidebar() {
           )}
         </div>
       </nav>
+
+      {errorMessage && (
+        <div className="error-toast" onClick={() => setErrorMessage(null)}>
+          <span>{errorMessage}</span>
+        </div>
+      )}
 
       {isScanning && (
         <div className="scanning-indicator">

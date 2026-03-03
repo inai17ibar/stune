@@ -18,8 +18,10 @@ interface AppState {
   // Library
   library: Library | null;
   isScanning: boolean;
+  errorMessage: string | null;
   setLibrary: (library: Library | null) => void;
   setIsScanning: (scanning: boolean) => void;
+  setErrorMessage: (msg: string | null) => void;
 
   // Device
   devices: WalkmanDevice[];
@@ -60,8 +62,10 @@ export const useStore = create<AppState>((set) => ({
   // Library
   library: null,
   isScanning: false,
+  errorMessage: null,
   setLibrary: (library) => set({ library }),
   setIsScanning: (isScanning) => set({ isScanning }),
+  setErrorMessage: (errorMessage) => set({ errorMessage }),
 
   // Device
   devices: [],
