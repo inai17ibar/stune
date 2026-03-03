@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, session } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { scanLibrary, scanDevice } from './services/library';
@@ -51,6 +51,20 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Allow eval() in dev mode for Vite's React Fast Refresh (Babel HMR)
+  if (isDev) {
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:*; img-src 'self' data:",
+          ],
+        },
+      });
+    });
+  }
+
   createWindow();
 
   // Watch for Walkman device connections
