@@ -10,21 +10,30 @@ import Toolbar from './components/Toolbar';
 export default function App() {
   const { viewMode, setDevices, transferJob } = useStore();
 
+  const { setLibrary } = useStore();
+
   useEffect(() => {
-    // Listen for device changes from Electron
-    if (window.stune) {
-      const cleanup = window.stune.onDevicesChanged((devices) => {
-        setDevices(devices);
-      });
+    if (!window.stune) return;
 
-      // Initial device check
-      window.stune.getDevices().then((devices) => {
-        setDevices(devices);
-      });
+    // Load persisted library on startup
+    window.stune.loadLibraryDb().then((lib: any) => {
+      if (lib) {
+        setLibrary(lib);
+      }
+    });
 
-      return cleanup;
-    }
-  }, [setDevices]);
+    // Listen for device changes
+    const cleanup = window.stune.onDevicesChanged((devices) => {
+      setDevices(devices);
+    });
+
+    // Initial device check
+    window.stune.getDevices().then((devices) => {
+      setDevices(devices);
+    });
+
+    return cleanup;
+  }, [setDevices, setLibrary]);
 
   return (
     <div className="app">

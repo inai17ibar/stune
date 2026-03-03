@@ -6,6 +6,25 @@ contextBridge.exposeInMainWorld('stune', {
   scanLibrary: (folderPath: string) =>
     ipcRenderer.invoke('scan-library', folderPath),
 
+  // Library DB (persistent JSON storage)
+  loadLibraryDb: () => ipcRenderer.invoke('load-library-db'),
+  addLibraryFolder: (folderPath: string) =>
+    ipcRenderer.invoke('add-library-folder', folderPath),
+  rescanLibrary: () => ipcRenderer.invoke('rescan-library'),
+  removeLibraryFolder: (folderPath: string) =>
+    ipcRenderer.invoke('remove-library-folder', folderPath),
+  updateTrackMeta: (
+    filePath: string,
+    updates: Partial<{
+      rating: number;
+      playCount: number;
+      favorite: boolean;
+      tags: string[];
+      comment: string;
+    }>
+  ) => ipcRenderer.invoke('update-track-meta', { filePath, updates }),
+  getLibraryDbPath: () => ipcRenderer.invoke('get-library-db-path'),
+
   // Device
   getDevices: () => ipcRenderer.invoke('get-devices'),
   scanDevice: (mountPath: string) =>
@@ -37,5 +56,15 @@ contextBridge.exposeInMainWorld('stune', {
     const handler = (_event: any, progress: any) => callback(progress);
     ipcRenderer.on('transfer-progress', handler);
     return () => ipcRenderer.removeListener('transfer-progress', handler);
+  },
+  onScanProgress: (
+    callback: (progress: { current: number; total: number }) => void
+  ) => {
+    const handler = (
+      _event: any,
+      progress: { current: number; total: number }
+    ) => callback(progress);
+    ipcRenderer.on('scan-progress', handler);
+    return () => ipcRenderer.removeListener('scan-progress', handler);
   },
 });

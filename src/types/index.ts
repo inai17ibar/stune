@@ -15,6 +15,14 @@ export interface TrackMetadata {
   format: string;
   fileSize: number; // bytes
   coverArt: string | null; // base64 data URI
+  // Custom metadata (persisted in library DB)
+  dateAdded?: string;
+  lastModified?: number;
+  rating?: number; // 0-5
+  playCount?: number;
+  favorite?: boolean;
+  tags?: string[];
+  comment?: string;
 }
 
 export interface Album {
@@ -27,6 +35,7 @@ export interface Album {
 
 export interface Library {
   rootPath: string;
+  libraryPaths?: string[];
   tracks: TrackMetadata[];
   albums: Album[];
   totalSize: number;

@@ -13,33 +13,43 @@ export default function Sidebar() {
     setLibrary,
   } = useStore();
 
-  const handleSelectFolder = async () => {
+  const handleAddFolder = async () => {
     if (!window.stune) return;
     const folder = await window.stune.selectLibraryFolder();
     if (!folder) return;
 
     setIsScanning(true);
     try {
-      const lib = await window.stune.scanLibrary(folder);
+      const lib = await window.stune.addLibraryFolder(folder);
       setLibrary(lib);
       setViewMode('library');
     } catch (err) {
-      console.error('Failed to scan library:', err);
+      console.error('Failed to add library folder:', err);
     } finally {
       setIsScanning(false);
     }
   };
 
   const handleRescan = async () => {
-    if (!window.stune || !library) return;
+    if (!window.stune) return;
     setIsScanning(true);
     try {
-      const lib = await window.stune.scanLibrary(library.rootPath);
+      const lib = await window.stune.rescanLibrary();
       setLibrary(lib);
     } catch (err) {
       console.error('Failed to rescan library:', err);
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  const handleRemoveFolder = async (folderPath: string) => {
+    if (!window.stune) return;
+    try {
+      const lib = await window.stune.removeLibraryFolder(folderPath);
+      setLibrary(lib);
+    } catch (err) {
+      console.error('Failed to remove folder:', err);
     }
   };
 
@@ -56,6 +66,8 @@ export default function Sidebar() {
     }
   };
 
+  const libraryPaths = library?.libraryPaths || [];
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -66,7 +78,7 @@ export default function Sidebar() {
         <div className="nav-section">
           <h3 className="nav-section-title">LIBRARY</h3>
 
-          {library ? (
+          {library && library.tracks.length > 0 && (
             <>
               <button
                 className={`nav-item ${viewMode === 'library' ? 'active' : ''}`}
@@ -84,15 +96,37 @@ export default function Sidebar() {
                 Albums
                 <span className="nav-badge">{library.albums.length}</span>
               </button>
-              <button className="nav-item subtle" onClick={handleRescan}>
-                <span className="nav-icon">&#8635;</span>
-                Rescan
-              </button>
             </>
-          ) : (
-            <button className="nav-item add-library" onClick={handleSelectFolder}>
-              <span className="nav-icon">+</span>
-              Add Music Folder
+          )}
+
+          {libraryPaths.length > 0 && (
+            <div className="library-folders">
+              {libraryPaths.map((fp) => (
+                <div key={fp} className="library-folder-item">
+                  <span className="folder-path" title={fp}>
+                    {fp.split('/').pop()}
+                  </span>
+                  <button
+                    className="folder-remove"
+                    onClick={() => handleRemoveFolder(fp)}
+                    title="Remove folder"
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button className="nav-item add-library" onClick={handleAddFolder}>
+            <span className="nav-icon">+</span>
+            Add Music Folder
+          </button>
+
+          {library && library.tracks.length > 0 && (
+            <button className="nav-item subtle" onClick={handleRescan}>
+              <span className="nav-icon">&#8635;</span>
+              Rescan
             </button>
           )}
         </div>

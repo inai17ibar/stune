@@ -5,6 +5,17 @@ import { scanLibrary, scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices } from './services/device';
 import { copyTracks } from './services/transfer';
 import { readTrackMetadata } from './services/metadata';
+import {
+  loadLibraryDb,
+  saveLibraryDb,
+  scanFolderIntoDb,
+  removeFolderFromDb,
+  updateTrackCustomMeta,
+  dbToLibrary,
+  type LibraryDatabase,
+} from './services/libraryDb';
+
+let libraryDb: LibraryDatabase | null = null;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -65,9 +76,12 @@ app.on('activate', () => {
 // Select a folder for the music library
 ipcMain.handle('select-library-folder', async () => {
   if (!mainWindow) return null;
+  const defaultMusicPath = path.join(app.getPath('home'), 'Music');
   const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
+    properties: ['openDirectory', 'treatPackageAsDirectory'],
     title: 'Select Music Library Folder',
+    defaultPath: defaultMusicPath,
+    message: 'Select a folder containing your music files',
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
@@ -126,6 +140,88 @@ ipcMain.handle('delete-tracks', async (_event, filePaths: string[]) => {
 // Show file in Finder
 ipcMain.handle('show-in-finder', async (_event, filePath: string) => {
   shell.showItemInFolder(filePath);
+});
+
+// ===== Library DB Handlers =====
+
+// Load the persistent library database
+ipcMain.handle('load-library-db', async () => {
+  libraryDb = await loadLibraryDb();
+  if (Object.keys(libraryDb.tracks).length > 0) {
+    return dbToLibrary(libraryDb);
+  }
+  return null;
+});
+
+// Add a folder to the library and scan it
+ipcMain.handle('add-library-folder', async (_event, folderPath: string) => {
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+  libraryDb = await scanFolderIntoDb(libraryDb, folderPath, (current, total) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('scan-progress', { current, total });
+    }
+  });
+  await saveLibraryDb(libraryDb);
+  return dbToLibrary(libraryDb);
+});
+
+// Rescan all library folders (incremental - only changed files)
+ipcMain.handle('rescan-library', async () => {
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+  for (const folderPath of libraryDb.libraryPaths) {
+    libraryDb = await scanFolderIntoDb(libraryDb, folderPath, (current, total) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('scan-progress', { current, total });
+      }
+    });
+  }
+  await saveLibraryDb(libraryDb);
+  return dbToLibrary(libraryDb);
+});
+
+// Remove a folder from the library
+ipcMain.handle('remove-library-folder', async (_event, folderPath: string) => {
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+  libraryDb = removeFolderFromDb(libraryDb, folderPath);
+  await saveLibraryDb(libraryDb);
+  return dbToLibrary(libraryDb);
+});
+
+// Update custom metadata for a track (rating, tags, etc.)
+ipcMain.handle(
+  'update-track-meta',
+  async (
+    _event,
+    args: {
+      filePath: string;
+      updates: Partial<{
+        rating: number;
+        playCount: number;
+        favorite: boolean;
+        tags: string[];
+        comment: string;
+      }>;
+    }
+  ) => {
+    if (!libraryDb) {
+      libraryDb = await loadLibraryDb();
+    }
+    libraryDb = updateTrackCustomMeta(libraryDb, args.filePath, args.updates);
+    await saveLibraryDb(libraryDb);
+    return libraryDb.tracks[args.filePath] || null;
+  }
+);
+
+// Get the library DB file path (for debugging / export)
+ipcMain.handle('get-library-db-path', async () => {
+  const userDataPath = app.getPath('userData');
+  return path.join(userDataPath, 'sTuneLibrary.json');
 });
 
 // Get disk usage for a path

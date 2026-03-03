@@ -146,6 +146,47 @@ body {
   justify-content: center;
 }
 
+.library-folders {
+  padding: 2px 0 4px;
+}
+
+.library-folder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.library-folder-item .folder-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.library-folder-item .folder-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.library-folder-item:hover .folder-remove {
+  opacity: 1;
+}
+
+.library-folder-item .folder-remove:hover {
+  color: var(--accent);
+}
+
 .nav-icon {
   font-size: 14px;
   width: 18px;
