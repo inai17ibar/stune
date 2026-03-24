@@ -1,6 +1,19 @@
-import * as mm from 'music-metadata';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// Use Function constructor to prevent TypeScript from converting
+// dynamic import() to require() — music-metadata v11+ is ESM-only.
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+  specifier: string
+) => Promise<typeof import('music-metadata')>;
+
+let mm: typeof import('music-metadata') | null = null;
+async function getMusicMetadata() {
+  if (!mm) {
+    mm = await dynamicImport('music-metadata');
+  }
+  return mm;
+}
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.mp3',
@@ -26,7 +39,8 @@ export function isSupportedAudioFile(filePath: string): boolean {
 export async function readTrackMetadata(filePath: string): Promise<any> {
   try {
     const stats = await fs.promises.stat(filePath);
-    const metadata = await mm.parseFile(filePath);
+    const mmLib = await getMusicMetadata();
+    const metadata = await mmLib.parseFile(filePath);
     const { common, format } = metadata;
 
     let coverArt: string | null = null;
