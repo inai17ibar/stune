@@ -50,6 +50,8 @@ func main() {
 			handleUpload(req)
 		case "download":
 			handleDownload(req)
+		case "delete":
+			handleDelete(req)
 		default:
 			out(map[string]string{"error": "unknown cmd: " + cmd})
 		}
@@ -163,6 +165,39 @@ func handleUpload(req map[string]json.RawMessage) {
 		return
 	}
 	out(map[string]bool{"ok": true})
+}
+
+func handleDelete(req map[string]json.RawMessage) {
+	var storageId string
+	_ = json.Unmarshal(req["storageId"], &storageId)
+
+	var paths []string
+	_ = json.Unmarshal(req["paths"], &paths)
+	if len(paths) == 0 {
+		out(map[string]string{"error": "missing paths"})
+		return
+	}
+	sid, _ := strconv.ParseUint(storageId, 10, 32)
+	storageIdU32 := uint32(sid)
+
+	dev, err := mtpx.Initialize(mtpx.Init{})
+	if err != nil {
+		out(map[string]string{"error": err.Error()})
+		return
+	}
+	defer mtpx.Dispose(dev)
+
+	var fileProps []mtpx.FileProp
+	for _, p := range paths {
+		fileProps = append(fileProps, mtpx.FileProp{ObjectId: 0, FullPath: p})
+	}
+
+	err = mtpx.DeleteFile(dev, storageIdU32, fileProps)
+	if err != nil {
+		out(map[string]string{"error": err.Error()})
+		return
+	}
+	out(map[string]interface{}{"ok": true, "deletedCount": len(paths)})
 }
 
 func handleDownload(req map[string]json.RawMessage) {
