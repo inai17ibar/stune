@@ -1,6 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../stores/useStore';
 import DiskUsageBar from './DiskUsageBar';
+import type { Album } from '../types';
+
+// ---------------------------------------------------------------------------
+// MTP types
+// ---------------------------------------------------------------------------
 
 interface MtpFileEntry {
   objectId: number;
@@ -22,6 +27,10 @@ interface MtpDeviceDetail {
   storages: MtpStorageInfo[];
   storageId: string;
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const AUDIO_EXTENSIONS = new Set([
   '.mp3', '.flac', '.wav', '.aac', '.m4a', '.alac', '.aiff', '.aif',
@@ -45,9 +54,67 @@ function formatSize(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
-export default function DeviceView() {
-  const { activeDevice, isScanning } = useStore();
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
+function isMtpDevice(mountPath: string): boolean {
+  return mountPath.startsWith('mtp://');
+}
+
+// ---------------------------------------------------------------------------
+// Group tracks by Artist > Album for the USB tree view
+// ---------------------------------------------------------------------------
+
+interface ArtistGroup {
+  artist: string;
+  albums: Album[];
+  trackCount: number;
+}
+
+function groupByArtist(albums: Album[]): ArtistGroup[] {
+  const map = new Map<string, Album[]>();
+  for (const album of albums) {
+    const key = album.artist || 'Unknown Artist';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(album);
+  }
+  return Array.from(map.entries())
+    .map(([artist, artistAlbums]) => ({
+      artist,
+      albums: artistAlbums.sort((a, b) => (a.year ?? 0) - (b.year ?? 0) || a.name.localeCompare(b.name)),
+      trackCount: artistAlbums.reduce((sum, al) => sum + al.tracks.length, 0),
+    }))
+    .sort((a, b) => a.artist.localeCompare(b.artist));
+}
+
+// ===========================================================================
+// Component
+// ===========================================================================
+
+export default function DeviceView() {
+  const {
+    activeDevice,
+    isScanning,
+    setActiveDevice,
+    selectedTracks,
+    toggleTrackSelection,
+    selectAllTracks,
+    clearSelection,
+  } = useStore();
+
+  // ---- Shared state -------------------------------------------------------
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // ---- USB state ----------------------------------------------------------
+  const [expandedArtists, setExpandedArtists] = useState<Set<string>>(new Set());
+  const [expandedAlbums, setExpandedAlbums] = useState<Set<string>>(new Set());
+  const [searchFilter, setSearchFilter] = useState('');
+
+  // ---- MTP state ----------------------------------------------------------
   const [mtpDevice, setMtpDevice] = useState<MtpDeviceDetail | null>(null);
   const [activeStorageId, setActiveStorageId] = useState<string>('');
   const [currentPath, setCurrentPath] = useState('/Music');
@@ -58,73 +125,123 @@ export default function DeviceView() {
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const [audioName, setAudioName] = useState<string>('');
 
-  // MTP デバイス情報を取得
+  // ---- Derived values (must be before early returns) ----------------------
+  const isUsb = activeDevice ? !isMtpDevice(activeDevice.mountPath) : false;
+
+  const artistGroups = useMemo(() => {
+    if (!activeDevice || !isUsb) return [];
+    return groupByArtist(activeDevice.albums);
+  }, [activeDevice, isUsb]);
+
+  const allUsbTracks = useMemo(() => {
+    if (!activeDevice || !isUsb) return [];
+    return activeDevice.tracks;
+  }, [activeDevice, isUsb]);
+
+  const filteredArtistGroups = useMemo(() => {
+    if (!searchFilter) return artistGroups;
+    const q = searchFilter.toLowerCase();
+    return artistGroups
+      .map((ag) => {
+        const matchedAlbums = ag.albums
+          .map((album) => {
+            const tracks = album.tracks.filter(
+              (t) =>
+                t.title.toLowerCase().includes(q) ||
+                t.artist.toLowerCase().includes(q) ||
+                t.album.toLowerCase().includes(q)
+            );
+            if (tracks.length === 0) return null;
+            return { ...album, tracks };
+          })
+          .filter(Boolean) as Album[];
+        if (matchedAlbums.length === 0) return null;
+        return {
+          ...ag,
+          albums: matchedAlbums,
+          trackCount: matchedAlbums.reduce((s, a) => s + a.tracks.length, 0),
+        };
+      })
+      .filter(Boolean) as ArtistGroup[];
+  }, [artistGroups, searchFilter]);
+
+  const selectedCount = selectedTracks.size;
+
+  // ---- MTP effects (always declared, guarded internally) ------------------
+
   useEffect(() => {
-    if (!activeDevice || !window.stune) return;
+    if (!activeDevice || isUsb || !window.stune) return;
     window.stune.mtpGetDevices().then((devices: MtpDeviceDetail[]) => {
       if (devices.length > 0) {
         const dev = devices[0];
         setMtpDevice(dev);
-        // SD カード（2番目のストレージ）があればそちらをデフォルトに
-        const defaultStorage = dev.storages.length > 1
-          ? dev.storages[1].storageId
-          : dev.storages[0].storageId;
+        const defaultStorage =
+          dev.storages.length > 1
+            ? dev.storages[1].storageId
+            : dev.storages[0].storageId;
         setActiveStorageId(defaultStorage);
       }
     });
-  }, [activeDevice]);
+  }, [activeDevice, isUsb]);
 
-  // ディレクトリ内容をフェッチ
-  const browse = useCallback(async (storageId: string, dirPath: string) => {
-    if (!window.stune) return;
-    setLoading(true);
-    try {
-      const result = await window.stune.mtpBrowse(storageId, dirPath);
-      setFiles(result || []);
-    } catch (err) {
-      console.error('Browse failed:', err);
-      setFiles([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const browse = useCallback(
+    async (storageId: string, dirPath: string) => {
+      if (!window.stune) return;
+      setLoading(true);
+      try {
+        const result = await window.stune.mtpBrowse(storageId, dirPath);
+        setFiles(result || []);
+      } catch (err) {
+        console.error('Browse failed:', err);
+        setFiles([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
-    if (activeStorageId) {
+    if (activeStorageId && !isUsb) {
       browse(activeStorageId, currentPath);
     }
-  }, [activeStorageId, currentPath, browse]);
+  }, [activeStorageId, currentPath, browse, isUsb]);
 
-  // フォルダに入る
-  const navigateTo = (dirPath: string) => {
-    setCurrentPath(dirPath);
-  };
+  // Clear selection when device changes
+  useEffect(() => {
+    clearSelection();
+    setSearchFilter('');
+    setExpandedArtists(new Set());
+    setExpandedAlbums(new Set());
+    setDeleteError(null);
+  }, [activeDevice, clearSelection]);
 
-  // パンくずリストのクリック
+  // ---- MTP navigation helpers ---------------------------------------------
+
+  const navigateTo = (dirPath: string) => setCurrentPath(dirPath);
+
   const navigateToBreadcrumb = (index: number) => {
     const parts = currentPath.split('/').filter(Boolean);
     const newPath = '/' + parts.slice(0, index + 1).join('/');
     setCurrentPath(newPath);
   };
 
-  // ルートに戻る
-  const navigateToRoot = () => {
-    setCurrentPath('/');
-  };
+  const navigateToRoot = () => setCurrentPath('/');
 
-  // ストレージ切り替え
   const switchStorage = (storageId: string) => {
     setActiveStorageId(storageId);
     setCurrentPath('/Music');
     setFiles([]);
   };
 
-  // 再生
-  const handlePlay = async (file: MtpFileEntry) => {
+  const handleMtpPlay = async (file: MtpFileEntry) => {
     if (!window.stune || downloadingFile) return;
     setDownloadingFile(file.fullPath);
     try {
-      const localPath = await window.stune.mtpDownloadFile(activeStorageId, file.fullPath);
+      const localPath = await window.stune.mtpDownloadFile(
+        activeStorageId,
+        file.fullPath
+      );
       if (localPath) {
         setAudioSrc(`stune-audio://${localPath}`);
         setAudioName(file.name.replace(/\.[^.]+$/, ''));
@@ -137,15 +254,91 @@ export default function DeviceView() {
     }
   };
 
+  // ---- USB toggle helpers -------------------------------------------------
+
+  const toggleArtist = (artist: string) => {
+    setExpandedArtists((prev) => {
+      const next = new Set(prev);
+      if (next.has(artist)) next.delete(artist);
+      else next.add(artist);
+      return next;
+    });
+  };
+
+  const toggleAlbum = (key: string) => {
+    setExpandedAlbums((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // ---- USB select helpers -------------------------------------------------
+
+  const toggleAlbumSelection = (album: Album) => {
+    const paths = album.tracks.map((t) => t.filePath);
+    const allSelected = paths.every((p) => selectedTracks.has(p));
+    if (allSelected) {
+      // Deselect all in this album
+      for (const p of paths) {
+        if (selectedTracks.has(p)) toggleTrackSelection(p);
+      }
+    } else {
+      // Select all in this album
+      for (const p of paths) {
+        if (!selectedTracks.has(p)) toggleTrackSelection(p);
+      }
+    }
+  };
+
+  const handleSelectAll = () => {
+    if (selectedCount === allUsbTracks.length) {
+      clearSelection();
+    } else {
+      selectAllTracks(allUsbTracks.map((t) => t.filePath));
+    }
+  };
+
+  // ---- USB delete ---------------------------------------------------------
+
+  const handleDeleteSelected = async () => {
+    if (!window.stune || selectedCount === 0 || !activeDevice) return;
+    const paths = Array.from(selectedTracks);
+    const confirmMsg = `Delete ${paths.length} track${paths.length > 1 ? 's' : ''} from the device? This cannot be undone.`;
+    if (!confirm(confirmMsg)) return;
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await window.stune.deleteDeviceTracks(activeDevice.mountPath, paths);
+      if (!result.success) {
+        setDeleteError(
+          `Failed to delete ${result.errors.length} file(s): ${result.errors.join(', ')}`
+        );
+      }
+      clearSelection();
+      // Update device with rescanned data from the backend
+      if (result.device) {
+        setActiveDevice({ ...activeDevice, ...result.device });
+      }
+    } catch (err) {
+      setDeleteError(`Delete failed: ${err}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // ---- Early returns ------------------------------------------------------
+
   if (!activeDevice) {
     return (
       <div className="empty-state center">
         <div className="empty-icon">&#9654;</div>
-        <h2>デバイスが選択されていません</h2>
+        <h2>No device selected</h2>
         <p>
-          Walkman を USB で接続し、データ転送モードにしたうえで
-          <br />
-          サイドバーの「WALKMAN」からデバイスを選んでください。
+          Connect your Walkman via USB in data-transfer mode, then select it
+          from the sidebar.
         </p>
       </div>
     );
@@ -160,27 +353,262 @@ export default function DeviceView() {
     );
   }
 
-  // パンくずリスト
-  const pathParts = currentPath.split('/').filter(Boolean);
+  // ========================================================================
+  // USB-mounted Walkman view
+  // ========================================================================
 
-  // フォルダとファイルを分離
-  const folders = files.filter((f) => f.isDir).sort((a, b) => a.name.localeCompare(b.name));
+  if (isUsb) {
+    return (
+      <div className="device-view">
+        <div className="view-header">
+          <h2>{activeDevice.name}</h2>
+          <span className="view-header-meta">
+            {allUsbTracks.length} tracks &middot; {formatSize(allUsbTracks.reduce((s, t) => s + t.fileSize, 0))}
+          </span>
+        </div>
+
+        <DiskUsageBar device={activeDevice} />
+
+        {/* Toolbar */}
+        <div className="device-toolbar">
+          <input
+            type="text"
+            className="device-search"
+            placeholder="曲名・アーティスト名で検索..."
+            value={searchFilter}
+            onChange={(e) => setSearchFilter(e.target.value)}
+          />
+
+          <div className="device-toolbar-actions">
+            <button
+              className="btn btn-small"
+              onClick={handleSelectAll}
+            >
+              {selectedCount === allUsbTracks.length && allUsbTracks.length > 0
+                ? '選択解除'
+                : 'すべて選択'}
+            </button>
+          </div>
+        </div>
+
+        {/* Delete action bar - visible when tracks selected */}
+        {selectedCount > 0 && (
+          <div className="device-delete-bar">
+            <span className="device-delete-info">
+              {selectedCount} 曲を選択中
+            </span>
+            <div className="device-delete-actions">
+              <button
+                className="btn btn-small"
+                onClick={clearSelection}
+              >
+                選択解除
+              </button>
+              <button
+                className="btn btn-small btn-danger"
+                onClick={handleDeleteSelected}
+                disabled={deleting}
+              >
+                {deleting
+                  ? '削除中...'
+                  : `🗑 選択した ${selectedCount} 曲を削除`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {deleteError && (
+          <div className="error-banner">{deleteError}</div>
+        )}
+
+        {/* Artist > Album > Track tree */}
+        <div className="device-browser">
+          {filteredArtistGroups.length === 0 && (
+            <div className="empty-state">
+              <p>
+                {searchFilter
+                  ? 'No tracks match your filter.'
+                  : 'No music found on this device.'}
+              </p>
+            </div>
+          )}
+
+          {filteredArtistGroups.map((ag) => {
+            const artistExpanded = expandedArtists.has(ag.artist);
+            return (
+              <div key={ag.artist} className="usb-artist-group">
+                <button
+                  className="usb-artist-header"
+                  onClick={() => toggleArtist(ag.artist)}
+                >
+                  <span className="usb-expand-icon">
+                    {artistExpanded ? '\u25BC' : '\u25B6'}
+                  </span>
+                  <span className="usb-artist-name">{ag.artist}</span>
+                  <span className="usb-artist-count">
+                    {ag.albums.length} album{ag.albums.length > 1 ? 's' : ''} &middot; {ag.trackCount} track{ag.trackCount > 1 ? 's' : ''}
+                  </span>
+                </button>
+
+                {artistExpanded &&
+                  ag.albums.map((album) => {
+                    const albumKey = `${ag.artist}::${album.name}`;
+                    const albumExpanded = expandedAlbums.has(albumKey);
+                    const albumAllSelected =
+                      album.tracks.length > 0 &&
+                      album.tracks.every((t) =>
+                        selectedTracks.has(t.filePath)
+                      );
+                    const albumSomeSelected =
+                      !albumAllSelected &&
+                      album.tracks.some((t) =>
+                        selectedTracks.has(t.filePath)
+                      );
+
+                    return (
+                      <div key={albumKey} className="usb-album-group">
+                        <div className="usb-album-header">
+                          <input
+                            type="checkbox"
+                            className="usb-checkbox"
+                            checked={albumAllSelected}
+                            ref={(el) => {
+                              if (el) el.indeterminate = albumSomeSelected;
+                            }}
+                            onChange={() => toggleAlbumSelection(album)}
+                            title="Select all tracks in this album"
+                          />
+                          <button
+                            className="usb-album-toggle"
+                            onClick={() => toggleAlbum(albumKey)}
+                          >
+                            <span className="usb-expand-icon">
+                              {albumExpanded ? '\u25BC' : '\u25B6'}
+                            </span>
+                            {album.coverArt && (
+                              <img
+                                className="usb-album-cover"
+                                src={album.coverArt}
+                                alt=""
+                              />
+                            )}
+                            <span className="usb-album-name">
+                              {album.name || 'Unknown Album'}
+                            </span>
+                            {album.year && (
+                              <span className="usb-album-year">
+                                ({album.year})
+                              </span>
+                            )}
+                            <span className="usb-album-count">
+                              {album.tracks.length} track{album.tracks.length > 1 ? 's' : ''}
+                            </span>
+                          </button>
+                        </div>
+
+                        {albumExpanded && (
+                          <div className="track-list usb-track-list">
+                            <div className="track-list-header">
+                              <div className="track-col track-col-checkbox">&nbsp;</div>
+                              <div className="track-col track-col-num">#</div>
+                              <div className="track-col track-col-title">Title</div>
+                              <div className="track-col track-col-duration">Time</div>
+                              <div className="track-col track-col-size">Size</div>
+                              <div className="track-col track-col-format">Format</div>
+                            </div>
+                            <div className="track-list-body">
+                              {album.tracks
+                                .slice()
+                                .sort(
+                                  (a, b) =>
+                                    (a.discNumber ?? 1) - (b.discNumber ?? 1) ||
+                                    (a.trackNumber ?? 9999) -
+                                      (b.trackNumber ?? 9999)
+                                )
+                                .map((track, idx) => {
+                                  const isSelected = selectedTracks.has(
+                                    track.filePath
+                                  );
+                                  return (
+                                    <div
+                                      key={track.filePath}
+                                      className={`track-row ${isSelected ? 'selected' : ''}`}
+                                    >
+                                      <div className="track-col track-col-checkbox">
+                                        <input
+                                          type="checkbox"
+                                          className="usb-checkbox"
+                                          checked={isSelected}
+                                          onChange={() =>
+                                            toggleTrackSelection(
+                                              track.filePath
+                                            )
+                                          }
+                                        />
+                                      </div>
+                                      <div className="track-col track-col-num">
+                                        {track.trackNumber ?? idx + 1}
+                                      </div>
+                                      <div className="track-col track-col-title">
+                                        <span className="track-title-text">
+                                          {track.title || track.fileName}
+                                        </span>
+                                      </div>
+                                      <div className="track-col track-col-duration">
+                                        {track.duration
+                                          ? formatDuration(track.duration)
+                                          : '--:--'}
+                                      </div>
+                                      <div className="track-col track-col-size">
+                                        {formatSize(track.fileSize)}
+                                      </div>
+                                      <div className="track-col track-col-format">
+                                        <span className="format-badge">
+                                          {track.format?.toUpperCase() || ''}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ========================================================================
+  // MTP Walkman view (original browse-based approach)
+  // ========================================================================
+
+  const pathParts = currentPath.split('/').filter(Boolean);
+  const folders = files
+    .filter((f) => f.isDir)
+    .sort((a, b) => a.name.localeCompare(b.name));
   const audioFiles = files
     .filter((f) => !f.isDir && isAudioFile(f.name))
     .sort((a, b) => getTrackNumber(a.name) - getTrackNumber(b.name));
-
-  // 現在のストレージ情報
-  const currentStorage = mtpDevice?.storages.find((s) => s.storageId === activeStorageId);
+  const currentStorage = mtpDevice?.storages.find(
+    (s) => s.storageId === activeStorageId
+  );
 
   return (
     <div className="device-view">
       <div className="view-header">
         <h2>{activeDevice.name}</h2>
+        <span className="view-header-badge">MTP</span>
       </div>
 
       <DiskUsageBar device={activeDevice} />
 
-      {/* ストレージ選択タブ */}
+      {/* Storage tabs */}
       {mtpDevice && mtpDevice.storages.length > 1 && (
         <div className="storage-tabs">
           {mtpDevice.storages.map((s, i) => (
@@ -189,14 +617,16 @@ export default function DeviceView() {
               className={`storage-tab ${s.storageId === activeStorageId ? 'active' : ''}`}
               onClick={() => switchStorage(s.storageId)}
             >
-              {i === 0 ? '内蔵ストレージ' : 'SD カード'}
-              <span className="storage-tab-size">{formatSize(s.maxCapacity)}</span>
+              {i === 0 ? 'Internal Storage' : 'SD Card'}
+              <span className="storage-tab-size">
+                {formatSize(s.maxCapacity)}
+              </span>
             </button>
           ))}
         </div>
       )}
 
-      {/* パンくずナビゲーション */}
+      {/* Breadcrumb */}
       <div className="breadcrumb">
         <button className="breadcrumb-item" onClick={navigateToRoot}>
           {mtpDevice?.name || 'Device'}
@@ -214,7 +644,7 @@ export default function DeviceView() {
         ))}
         {currentStorage && (
           <span className="breadcrumb-free">
-            空き {formatSize(currentStorage.freeSpaceInBytes)}
+            Free: {formatSize(currentStorage.freeSpaceInBytes)}
           </span>
         )}
       </div>
@@ -222,11 +652,11 @@ export default function DeviceView() {
       {loading ? (
         <div className="empty-state center">
           <div className="spinner large" />
-          <p>読み込み中...</p>
+          <p>Loading...</p>
         </div>
       ) : (
         <div className="device-browser">
-          {/* フォルダ一覧 */}
+          {/* Folders */}
           {folders.length > 0 && (
             <div className="folder-grid">
               {folders.map((f) => (
@@ -242,7 +672,7 @@ export default function DeviceView() {
             </div>
           )}
 
-          {/* トラック一覧（iTunes風） */}
+          {/* Audio files */}
           {audioFiles.length > 0 && (
             <div className="track-list">
               <div className="track-list-header">
@@ -258,7 +688,8 @@ export default function DeviceView() {
                   const displayName = file.name
                     .replace(/\.[^.]+$/, '')
                     .replace(/^\d+[-\s]*/, '');
-                  const ext = file.name.split('.').pop()?.toUpperCase() || '';
+                  const ext =
+                    file.name.split('.').pop()?.toUpperCase() || '';
                   const isPlaying = playingFile === file.fullPath;
                   const isDownloading = downloadingFile === file.fullPath;
 
@@ -266,7 +697,7 @@ export default function DeviceView() {
                     <div
                       key={file.objectId}
                       className={`track-row ${isPlaying ? 'playing' : ''}`}
-                      onDoubleClick={() => handlePlay(file)}
+                      onDoubleClick={() => handleMtpPlay(file)}
                     >
                       <div className="track-col track-col-play-btn">
                         {isDownloading ? (
@@ -274,8 +705,8 @@ export default function DeviceView() {
                         ) : (
                           <button
                             className="play-btn"
-                            onClick={() => handlePlay(file)}
-                            title="再生"
+                            onClick={() => handleMtpPlay(file)}
+                            title="Play"
                           >
                             {isPlaying ? '\u23F8' : '\u25B6'}
                           </button>
@@ -285,7 +716,9 @@ export default function DeviceView() {
                         {trackNum < 9999 ? trackNum : index + 1}
                       </div>
                       <div className="track-col track-col-title">
-                        <span className="track-title-text">{displayName || file.name}</span>
+                        <span className="track-title-text">
+                          {displayName || file.name}
+                        </span>
                       </div>
                       <div className="track-col track-col-size">
                         {formatSize(file.size)}
@@ -302,13 +735,13 @@ export default function DeviceView() {
 
           {folders.length === 0 && audioFiles.length === 0 && (
             <div className="empty-state">
-              <p>このフォルダは空です</p>
+              <p>This folder is empty</p>
             </div>
           )}
         </div>
       )}
 
-      {/* オーディオプレイヤー */}
+      {/* Audio player (MTP) */}
       {audioSrc && (
         <div className="player-bar">
           <div className="player-info">
@@ -319,11 +752,16 @@ export default function DeviceView() {
             src={audioSrc}
             autoPlay
             controls
+            title={audioName || 'Audio player'}
             onEnded={() => {
-              // 次の曲を自動再生
-              const currentIndex = audioFiles.findIndex((f) => f.fullPath === playingFile);
-              if (currentIndex >= 0 && currentIndex < audioFiles.length - 1) {
-                handlePlay(audioFiles[currentIndex + 1]);
+              const currentIndex = audioFiles.findIndex(
+                (f) => f.fullPath === playingFile
+              );
+              if (
+                currentIndex >= 0 &&
+                currentIndex < audioFiles.length - 1
+              ) {
+                handleMtpPlay(audioFiles[currentIndex + 1]);
               } else {
                 setPlayingFile(null);
                 setAudioSrc(null);
@@ -332,6 +770,7 @@ export default function DeviceView() {
             }}
           />
           <button
+            type="button"
             className="player-close"
             onClick={() => {
               setAudioSrc(null);

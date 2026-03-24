@@ -103,10 +103,9 @@ export default function LibraryView() {
     );
   }
 
-  const handleTransferToWalkman = async () => {
-    if (!window.stune || selectedTracks.size === 0 || devices.length === 0) return;
+  const doTransfer = async (sourcePaths: string[]) => {
+    if (!window.stune || sourcePaths.length === 0 || devices.length === 0) return;
     const device = devices[transferTarget] || devices[0];
-    const sourcePaths = Array.from(selectedTracks);
 
     setIsTransferring(true);
     setTransferJob({
@@ -128,6 +127,9 @@ export default function LibraryView() {
     }
   };
 
+  const handleTransferSelected = () => doTransfer(Array.from(selectedTracks));
+  const handleTransferAlbum = (album: Album) => doTransfer(album.tracks.map((t) => t.filePath));
+
   return (
     <div className="library-view">
       <div className="view-header">
@@ -139,47 +141,50 @@ export default function LibraryView() {
 
       {selectedTracks.size > 0 && (
         <div className="selection-action-bar">
-          <span className="selection-count">{selectedTracks.size} tracks selected</span>
+          <span className="selection-count">{selectedTracks.size} 曲を選択中</span>
           <div className="selection-actions">
-            {devices.length > 0 && (
-              <div className="transfer-controls">
-                {devices.length > 1 && (
-                  <select
-                    className="transfer-target-select"
-                    value={transferTarget}
-                    onChange={(e) => setTransferTarget(Number(e.target.value))}
-                    aria-label="Transfer destination"
-                  >
-                    {devices.map((d, i) => (
-                      <option key={d.mountPath} value={i}>{d.name}</option>
-                    ))}
-                  </select>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleTransferToWalkman}
-                  disabled={isTransferring}
-                >
-                  Transfer to {(devices[transferTarget] || devices[0]).name || 'Walkman'}
-                </button>
-              </div>
-            )}
             <button
               type="button"
               className="btn btn-ghost"
               onClick={() => selectAllTracks(allTrackPaths)}
             >
-              Select All
+              すべて選択
             </button>
             <button
               type="button"
               className="btn btn-ghost"
               onClick={clearSelection}
             >
-              Clear
+              選択解除
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Transfer destination bar - always visible when device connected */}
+      {devices.length > 0 && (
+        <div className="transfer-dest-bar">
+          <span className="transfer-dest-label">転送先:</span>
+          <select
+            className="transfer-target-select"
+            value={transferTarget}
+            onChange={(e) => setTransferTarget(Number(e.target.value))}
+            aria-label="Transfer destination"
+          >
+            {devices.map((d, i) => (
+              <option key={d.mountPath} value={i}>{d.name}</option>
+            ))}
+          </select>
+          {selectedTracks.size > 0 && (
+            <button
+              type="button"
+              className="btn btn-primary btn-small"
+              onClick={handleTransferSelected}
+              disabled={isTransferring}
+            >
+              選択中の {selectedTracks.size} 曲を転送
+            </button>
+          )}
         </div>
       )}
 
@@ -198,6 +203,9 @@ export default function LibraryView() {
                 playAlbum(album.tracks, index);
               }
             }}
+            showTransfer={devices.length > 0}
+            isTransferring={isTransferring}
+            onTransferAlbum={() => handleTransferAlbum(album)}
           />
         ))}
       </div>
@@ -211,12 +219,18 @@ function AlbumSection({
   onToggleTrack,
   nowPlayingPath,
   onPlayTrack,
+  showTransfer,
+  isTransferring,
+  onTransferAlbum,
 }: {
   album: Album;
   selectedTracks: Set<string>;
   onToggleTrack: (filePath: string) => void;
   nowPlayingPath: string | null;
   onPlayTrack: (track: TrackMetadata, index: number) => void;
+  showTransfer?: boolean;
+  isTransferring?: boolean;
+  onTransferAlbum?: () => void;
 }) {
   const totalDuration = album.tracks.reduce((sum, t) => sum + t.duration, 0);
 
@@ -239,6 +253,17 @@ function AlbumSection({
             {album.tracks.length} tracks
             {totalDuration > 0 && ` \u00B7 ${formatDuration(totalDuration)}`}
           </p>
+          {showTransfer && onTransferAlbum && (
+            <button
+              type="button"
+              className="btn btn-small btn-transfer-album"
+              onClick={onTransferAlbum}
+              disabled={isTransferring}
+              title="このアルバムをWalkmanに転送"
+            >
+              &#x27A1; Walkmanに転送
+            </button>
+          )}
         </div>
       </div>
       <div className="album-section-tracks">

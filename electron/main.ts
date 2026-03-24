@@ -246,6 +246,49 @@ ipcMain.handle(
   }
 );
 
+// Delete tracks from a device, then rescan to update the view
+ipcMain.handle(
+  'delete-device-tracks',
+  async (_event, args: { mountPath: string; filePaths: string[] }) => {
+    const errors: string[] = [];
+    for (const filePath of args.filePaths) {
+      try {
+        // Safety: only delete files that are actually on the device
+        if (!filePath.startsWith(args.mountPath)) {
+          errors.push(`${filePath}: not on device ${args.mountPath}`);
+          continue;
+        }
+        await fs.promises.unlink(filePath);
+
+        // Clean up empty parent directories up to the MUSIC folder
+        const musicRoot = path.join(args.mountPath, 'MUSIC');
+        let dir = path.dirname(filePath);
+        while (dir.startsWith(musicRoot) && dir !== musicRoot) {
+          const entries = await fs.promises.readdir(dir);
+          if (entries.length === 0) {
+            await fs.promises.rmdir(dir);
+            dir = path.dirname(dir);
+          } else {
+            break;
+          }
+        }
+      } catch (err: any) {
+        errors.push(`${path.basename(filePath)}: ${err.message}`);
+      }
+    }
+
+    // Rescan device to get updated track list
+    const updatedDevice = await scanDevice(args.mountPath);
+
+    return {
+      success: errors.length === 0,
+      deletedCount: args.filePaths.length - errors.length,
+      errors,
+      device: updatedDevice,
+    };
+  }
+);
+
 // Read metadata for a single track
 ipcMain.handle('read-metadata', async (_event, filePath: string) => {
   return await readTrackMetadata(filePath);

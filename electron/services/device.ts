@@ -5,7 +5,7 @@ import { getMtpDevices, isMtpCliAvailable } from './mtp';
 // Known Walkman identifiers to detect
 const WALKMAN_INDICATORS = ['WALKMAN', 'NW-A', 'NW-ZX', 'NW-WM', 'SONY'];
 // SD card volume names commonly used with Walkman
-const SD_CARD_INDICATORS = ['SD_CARD', 'SDCARD', 'SD CARD', 'MICROSD'];
+const SD_CARD_INDICATORS = ['SD_CARD', 'SDCARD', 'SD CARD', 'MICROSD', 'WALKMAN_SD', 'NW_SD'];
 
 export interface DetectedDevice {
   name: string;
