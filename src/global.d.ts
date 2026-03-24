@@ -21,13 +21,27 @@ interface STuneAPI {
 
   // Device
   getDevices: () => Promise<any[]>;
+  isMtpCliAvailable: () => Promise<boolean>;
   scanDevice: (mountPath: string) => Promise<any>;
   getDiskUsage: (mountPath: string) => Promise<any>;
+
+  // MTP Browse & Playback
+  mtpBrowse: (storageId: string, path: string) => Promise<any[]>;
+  mtpDownloadFile: (storageId: string, remotePath: string) => Promise<string | null>;
+  mtpGetDevices: () => Promise<any[]>;
+
+  // Import
+  importToLibrary: () => Promise<{ library: any; imported: number; errors: string[] } | null>;
+  importFilesByPath: (filePaths: string[]) => Promise<{ library: any; imported: number; errors: string[] }>;
 
   // Transfer
   copyTracks: (
     sourcePaths: string[],
     destinationDir: string
+  ) => Promise<{ success: boolean; copiedCount: number; errors: string[] }>;
+  copyTracksStructured: (
+    sourcePaths: string[],
+    deviceMountPath: string
   ) => Promise<{ success: boolean; copiedCount: number; errors: string[] }>;
   deleteTracks: (
     filePaths: string[]

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useStore } from '../stores/useStore';
-import type { TrackMetadata, SortKey, SortOrder } from '../types';
+import type { TrackMetadata, SortKey } from '../types';
 
 interface TrackListProps {
   tracks: TrackMetadata[];
@@ -15,12 +15,14 @@ export default function TrackList({ tracks }: TrackListProps) {
     sortKey,
     sortOrder,
     searchQuery,
+    nowPlaying,
+    playAlbum,
+    setNowPlaying,
   } = useStore();
 
   const filteredAndSorted = useMemo(() => {
     let result = tracks;
 
-    // Filter
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(
@@ -31,7 +33,6 @@ export default function TrackList({ tracks }: TrackListProps) {
       );
     }
 
-    // Sort
     result = [...result].sort((a, b) => {
       const cmp = compareByKey(a, b, sortKey);
       return sortOrder === 'asc' ? cmp : -cmp;
@@ -52,9 +53,12 @@ export default function TrackList({ tracks }: TrackListProps) {
     }
   };
 
-  const handleContextMenu = (track: TrackMetadata) => {
-    if (window.stune) {
-      window.stune.showInFinder(track.filePath);
+  const handlePlay = (index: number) => {
+    const track = filteredAndSorted[index];
+    if (nowPlaying?.filePath === track.filePath) {
+      setNowPlaying(null);
+    } else {
+      playAlbum(filteredAndSorted, index);
     }
   };
 
@@ -76,6 +80,7 @@ export default function TrackList({ tracks }: TrackListProps) {
             onChange={handleSelectAll}
           />
         </div>
+        <div className="track-col track-col-play"></div>
         <div className="track-col track-col-title">Title</div>
         <div className="track-col track-col-artist">Artist</div>
         <div className="track-col track-col-album">Album</div>
@@ -84,43 +89,56 @@ export default function TrackList({ tracks }: TrackListProps) {
       </div>
 
       <div className="track-list-body">
-        {filteredAndSorted.map((track) => (
-          <div
-            key={track.filePath}
-            className={`track-row ${selectedTracks.has(track.filePath) ? 'selected' : ''}`}
-            onClick={() => toggleTrackSelection(track.filePath)}
-            onDoubleClick={() => handleContextMenu(track)}
-          >
-            <div className="track-col track-col-check">
-              <input
-                type="checkbox"
-                checked={selectedTracks.has(track.filePath)}
-                onChange={() => toggleTrackSelection(track.filePath)}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </div>
-            <div className="track-col track-col-title">
-              <div className="track-title-cell">
-                {track.coverArt && (
-                  <img
-                    className="track-thumb"
-                    src={track.coverArt}
-                    alt=""
-                  />
-                )}
-                <span className="track-title-text">{track.title}</span>
+        {filteredAndSorted.map((track, i) => {
+          const isTrackPlaying = nowPlaying?.filePath === track.filePath;
+          return (
+            <div
+              key={track.filePath}
+              className={`track-row ${selectedTracks.has(track.filePath) ? 'selected' : ''} ${isTrackPlaying ? 'playing' : ''}`}
+              onDoubleClick={() => handlePlay(i)}
+            >
+              <div className="track-col track-col-check">
+                <input
+                  type="checkbox"
+                  checked={selectedTracks.has(track.filePath)}
+                  onChange={() => toggleTrackSelection(track.filePath)}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`Select ${track.title}`}
+                />
+              </div>
+              <div className="track-col track-col-play">
+                <button
+                  type="button"
+                  className="track-play-btn"
+                  onClick={(e) => { e.stopPropagation(); handlePlay(i); }}
+                  title="Play"
+                >
+                  {isTrackPlaying ? '\u23F8' : '\u25B6'}
+                </button>
+              </div>
+              <div className="track-col track-col-title">
+                <div className="track-title-cell">
+                  {track.coverArt && (
+                    <img
+                      className="track-thumb"
+                      src={track.coverArt}
+                      alt=""
+                    />
+                  )}
+                  <span className="track-title-text">{track.title}</span>
+                </div>
+              </div>
+              <div className="track-col track-col-artist">{track.artist}</div>
+              <div className="track-col track-col-album">{track.album}</div>
+              <div className="track-col track-col-duration">
+                {formatDuration(track.duration)}
+              </div>
+              <div className="track-col track-col-format">
+                <span className="format-badge">{track.format}</span>
               </div>
             </div>
-            <div className="track-col track-col-artist">{track.artist}</div>
-            <div className="track-col track-col-album">{track.album}</div>
-            <div className="track-col track-col-duration">
-              {formatDuration(track.duration)}
-            </div>
-            <div className="track-col track-col-format">
-              <span className="format-badge">{track.format}</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

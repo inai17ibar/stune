@@ -1,19 +1,23 @@
 {
-  "name": "stune",
+  "name": "stunes",
   "version": "1.0.0",
   "description": "Music manager for Mac and Sony Walkman",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && tsc -p tsconfig.electron.json",
-    "electron:dev": "tsc -p tsconfig.electron.json && concurrently \"vite\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder"
+    "electron:dev": "unset ELECTRON_RUN_AS_NODE && tsc -p tsconfig.electron.json && concurrently \"vite\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on http://localhost:5173 && env -u ELECTRON_RUN_AS_NODE electron .\"",
+    "electron:build": "env -u ELECTRON_RUN_AS_NODE npm run build && env -u ELECTRON_RUN_AS_NODE electron-builder",
+    "setup": "bash scripts/setup.sh"
   },
-  "keywords": ["music", "walkman", "sony"],
+  "keywords": [
+    "music",
+    "walkman",
+    "sony"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "electron": "^40.6.1",
     "music-metadata": "^11.12.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -24,20 +28,28 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "concurrently": "^9.2.1",
+    "electron": "^33.4.11",
     "electron-builder": "^26.8.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
     "wait-on": "^9.0.4"
   },
   "build": {
-    "appId": "com.stune.app",
-    "productName": "sTune",
+    "appId": "com.stunes.app",
+    "productName": "sTunes",
     "mac": {
       "category": "public.app-category.music"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": ["**/*"]
+      }
     ]
   }
 }

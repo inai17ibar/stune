@@ -71,6 +71,6 @@ export interface TransferJob {
   error?: string;
 }
 
-export type ViewMode = 'library' | 'device' | 'albums';
+export type ViewMode = 'library' | 'device' | 'albums' | 'artists';
 export type SortKey = 'title' | 'artist' | 'album' | 'duration' | 'year';
 export type SortOrder = 'asc' | 'desc';

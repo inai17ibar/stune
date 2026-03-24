@@ -1,13 +1,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { getMtpDevices, isMtpCliAvailable } from './mtp';
 
 // Known Walkman identifiers to detect
 const WALKMAN_INDICATORS = ['WALKMAN', 'NW-A', 'NW-ZX', 'NW-WM', 'SONY'];
+// SD card volume names commonly used with Walkman
+const SD_CARD_INDICATORS = ['SD_CARD', 'SDCARD', 'SD CARD', 'MICROSD'];
 
-interface DetectedDevice {
+export interface DetectedDevice {
   name: string;
   mountPath: string;
   isWalkman: boolean;
+  /** true の場合は MTP デバイス（転送時は mtp サービスを使用） */
+  isMtp?: boolean;
 }
 
 async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
@@ -28,13 +33,20 @@ async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
       const hasMusicFolder = await checkMusicFolder(mountPath);
 
       // Check if the volume name contains Walkman identifiers
+      const upperName = entry.name.toUpperCase();
       const nameMatch = WALKMAN_INDICATORS.some((indicator) =>
-        entry.name.toUpperCase().includes(indicator)
+        upperName.includes(indicator)
+      );
+      const isSdCard = SD_CARD_INDICATORS.some((indicator) =>
+        upperName.includes(indicator)
       );
 
-      if (nameMatch || hasMusicFolder) {
+      if (nameMatch || hasMusicFolder || isSdCard) {
+        const displayName = isSdCard && !nameMatch
+          ? `${entry.name} (SD Card)`
+          : entry.name;
         devices.push({
-          name: entry.name,
+          name: displayName,
           mountPath,
           isWalkman: true,
         });
@@ -61,8 +73,22 @@ async function checkMusicFolder(mountPath: string): Promise<boolean> {
   return false;
 }
 
+/** USB マウント + MTP デバイスをまとめて返す */
 export async function getConnectedWalkman(): Promise<DetectedDevice[]> {
-  return await detectWalkmanVolumes();
+  const usb = await detectWalkmanVolumes();
+  if (!isMtpCliAvailable()) return usb;
+  try {
+    const mtpList = await getMtpDevices();
+    const mtpDevices: DetectedDevice[] = mtpList.map((d) => ({
+      name: d.name,
+      mountPath: d.mountPath,
+      isWalkman: d.isWalkman,
+      isMtp: true,
+    }));
+    return [...usb, ...mtpDevices];
+  } catch {
+    return usb;
+  }
 }
 
 export function watchDevices(
@@ -72,7 +98,7 @@ export function watchDevices(
   let previousDevices: string[] = [];
 
   const check = async () => {
-    const devices = await detectWalkmanVolumes();
+    const devices = await getConnectedWalkman();
     const currentPaths = devices.map((d) => d.mountPath).sort();
 
     if (JSON.stringify(currentPaths) !== JSON.stringify(previousDevices)) {

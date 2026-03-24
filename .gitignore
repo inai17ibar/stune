@@ -3,3 +3,7 @@ dist/
 dist-electron/
 .DS_Store
 *.log
+
+# MTP CLI ビルド成果物（setup.sh でビルドして resources/bin/ に配置）
+native/mtp-cli/mtp-cli
+resources/bin/mtp-cli

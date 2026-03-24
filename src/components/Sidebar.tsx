@@ -1,6 +1,8 @@
+import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../stores/useStore';
 
 export default function Sidebar() {
+  const [mtpCliAvailable, setMtpCliAvailable] = useState<boolean | null>(null);
   const {
     viewMode,
     setViewMode,
@@ -13,6 +15,8 @@ export default function Sidebar() {
     setLibrary,
     errorMessage,
     setErrorMessage,
+    connectionToast,
+    setConnectionToast,
   } = useStore();
 
   const showError = (msg: string) => {
@@ -36,6 +40,25 @@ export default function Sidebar() {
     } catch (err: any) {
       console.error('Failed to add library folder:', err);
       showError(`ライブラリの追加に失敗しました: ${err?.message || err}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleImportFiles = async () => {
+    if (!window.stune) return;
+    setIsScanning(true);
+    try {
+      const result = await window.stune.importToLibrary();
+      if (result) {
+        setLibrary(result.library);
+        if (result.errors.length > 0) {
+          showError(`${result.imported} files imported, ${result.errors.length} errors`);
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to import files:', err);
+      showError(`インポートに失敗しました: ${err?.message || err}`);
     } finally {
       setIsScanning(false);
     }
@@ -80,12 +103,65 @@ export default function Sidebar() {
     }
   };
 
+  // Drag & Drop
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    if (!window.stune) return;
+
+    const files = e.dataTransfer.files;
+    if (files.length === 0) return;
+
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i] as File & { path?: string };
+      if (f.path) paths.push(f.path);
+    }
+    if (paths.length === 0) return;
+
+    setIsScanning(true);
+    try {
+      const result = await window.stune.importFilesByPath(paths);
+      setLibrary(result.library);
+      setViewMode('library');
+      if (result.errors.length > 0) {
+        showError(`${result.imported} imported, ${result.errors.length} errors`);
+      }
+    } catch (err: any) {
+      console.error('Drop import failed:', err);
+      showError(`インポートに失敗しました: ${err?.message || err}`);
+    } finally {
+      setIsScanning(false);
+    }
+  }, [setIsScanning, setLibrary, setViewMode]);
+
   const libraryPaths = library?.libraryPaths || [];
+
+  useEffect(() => {
+    if (!window.stune) return;
+    window.stune.isMtpCliAvailable().then(setMtpCliAvailable);
+  }, []);
 
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <h1 className="app-title">sTune</h1>
+        <h1 className="app-title">sTunes</h1>
       </div>
 
       <nav className="sidebar-nav">
@@ -110,6 +186,13 @@ export default function Sidebar() {
                 Albums
                 <span className="nav-badge">{library.albums.length}</span>
               </button>
+              <button
+                className={`nav-item ${viewMode === 'artists' ? 'active' : ''}`}
+                onClick={() => setViewMode('artists')}
+              >
+                <span className="nav-icon">&#9834;</span>
+                Artists
+              </button>
             </>
           )}
 
@@ -132,10 +215,26 @@ export default function Sidebar() {
             </div>
           )}
 
-          <button className="nav-item add-library" onClick={handleAddFolder}>
-            <span className="nav-icon">+</span>
-            Add Music Folder
-          </button>
+          <div
+            className={`drop-zone ${isDragOver ? 'drag-over' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <button className="nav-item add-library" onClick={handleAddFolder}>
+              <span className="nav-icon">+</span>
+              Add Music Folder
+            </button>
+
+            <button className="nav-item add-library" onClick={handleImportFiles}>
+              <span className="nav-icon">&#9834;</span>
+              Import Files
+            </button>
+
+            <p className="drop-hint">
+              {isDragOver ? 'ドロップして追加' : 'ドラッグ&ドロップでも追加できます'}
+            </p>
+          </div>
 
           {library && library.tracks.length > 0 && (
             <button className="nav-item subtle" onClick={handleRescan}>
@@ -146,10 +245,55 @@ export default function Sidebar() {
         </div>
 
         <div className="nav-section">
-          <h3 className="nav-section-title">WALKMAN</h3>
+          <div className="nav-section-header">
+            <h3 className="nav-section-title">WALKMAN</h3>
+            {devices.length > 0 && (
+              <span className="device-connected-badge" title="データ転送用に認識されています">
+                <span className="device-connected-dot" />
+                {devices.length === 1 ? '接続中' : `${devices.length}台接続中`}
+              </span>
+            )}
+          </div>
 
           {devices.length === 0 ? (
-            <p className="nav-empty">No device connected</p>
+            <div className="nav-empty-block">
+              <p className="nav-empty nav-empty-hint">
+                Walkman を USB で接続し、<br />
+                データ転送モードにしてください
+              </p>
+              {mtpCliAvailable === true && (
+                <>
+                  <p className="nav-mtp-status nav-mtp-ok">MTP: mtp-cli 利用可能</p>
+                  <p className="nav-mtp-hint">
+                    接続されていません。USB で繋いだあと、Walkman の「USBの接続用途」で「<strong>ファイル転送</strong>」を選んでください。
+                  </p>
+                </>
+              )}
+              {mtpCliAvailable === false && (
+                <p className="nav-mtp-status nav-mtp-missing">
+                  MTP: 未対応 — <code>./scripts/setup.sh</code> 実行後、アプリを再起動
+                </p>
+              )}
+              <details className="walkman-help">
+                <summary>Finder に表示されない場合</summary>
+                <ul className="walkman-help-list">
+                  <li>Walkman の「USBの接続用途」で「<strong>ファイル転送</strong>」を選んでください（充電のみだと認識されません）</li>
+                  <li><strong>M1/M2/M3 Mac</strong> では、NW-A100・NW-ZX507 など一部機種は非対応です。NW-A300 系・NW-ZX707・NW-WM1 系は対応</li>
+                  <li>Mac は <strong>MTP</strong> を標準でドライブとしてマウントしないため、機種によっては Finder のサイドバーに一切出ないことがあります。その場合は別の転送ソフトが必要です</li>
+                </ul>
+                <a
+                  href="https://knowledge.support.sony.jp/electronics/support/articles/00234112"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="walkman-help-link"
+                >
+                  ソニー公式：Mac がウォークマンを認識しない場合 →
+                </a>
+                <p className="walkman-help-openmtp">
+                  sTunes で MTP が使えない Mac では、転送だけ <a href="https://openmtp.ganeshrvel.com/" target="_blank" rel="noopener noreferrer">OpenMTP</a> を使う運用がおすすめです。
+                </p>
+              </details>
+            </div>
           ) : (
             devices.map((device) => (
               <button
@@ -169,6 +313,17 @@ export default function Sidebar() {
           )}
         </div>
       </nav>
+
+      {connectionToast && (
+        <div
+          className="connection-toast"
+          onClick={() => setConnectionToast(null)}
+          role="status"
+        >
+          <span className="connection-toast-icon">&#10003;</span>
+          <span>{connectionToast}</span>
+        </div>
+      )}
 
       {errorMessage && (
         <div className="error-toast" onClick={() => setErrorMessage(null)}>

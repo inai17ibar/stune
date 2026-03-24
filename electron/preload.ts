@@ -27,14 +27,29 @@ contextBridge.exposeInMainWorld('stune', {
 
   // Device
   getDevices: () => ipcRenderer.invoke('get-devices'),
+  isMtpCliAvailable: () => ipcRenderer.invoke('is-mtp-cli-available'),
   scanDevice: (mountPath: string) =>
     ipcRenderer.invoke('scan-device', mountPath),
   getDiskUsage: (mountPath: string) =>
     ipcRenderer.invoke('get-disk-usage', mountPath),
 
+  // MTP Browse & Playback
+  mtpBrowse: (storageId: string, path: string) =>
+    ipcRenderer.invoke('mtp-browse', { storageId, path }),
+  mtpDownloadFile: (storageId: string, remotePath: string) =>
+    ipcRenderer.invoke('mtp-download-file', { storageId, remotePath }),
+  mtpGetDevices: () => ipcRenderer.invoke('mtp-get-devices'),
+
+  // Import
+  importToLibrary: () => ipcRenderer.invoke('import-to-library'),
+  importFilesByPath: (filePaths: string[]) =>
+    ipcRenderer.invoke('import-files-by-path', filePaths),
+
   // Transfer
   copyTracks: (sourcePaths: string[], destinationDir: string) =>
     ipcRenderer.invoke('copy-tracks', { sourcePaths, destinationDir }),
+  copyTracksStructured: (sourcePaths: string[], deviceMountPath: string) =>
+    ipcRenderer.invoke('copy-tracks-structured', { sourcePaths, deviceMountPath }),
   deleteTracks: (filePaths: string[]) =>
     ipcRenderer.invoke('delete-tracks', filePaths),
 

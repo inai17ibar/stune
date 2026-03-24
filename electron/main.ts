@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, session } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, session, protocol, net } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { scanLibrary, scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices } from './services/device';
 import { copyTracks } from './services/transfer';
+import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices } from './services/mtp';
 import { readTrackMetadata } from './services/metadata';
 import {
   loadLibraryDb,
@@ -27,10 +28,11 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: 'sTune',
+    title: 'sTunes',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#0d1117',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -40,30 +42,40 @@ function createWindow() {
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
+  mainWindow.on('ready-to-show', () => {
+    mainWindow!.show();
+    mainWindow!.focus();
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // 外部リンク（target="_blank" 等）はシステムのブラウザで開く
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
+  });
 }
 
+// Register custom protocol for serving local audio files
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'stune-audio', privileges: { stream: true, bypassCSP: true } },
+]);
+
 app.whenReady().then(() => {
-  // Allow eval() in dev mode for Vite's React Fast Refresh (Babel HMR)
-  if (isDev) {
-    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          'Content-Security-Policy': [
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:*; img-src 'self' data:",
-          ],
-        },
-      });
-    });
-  }
+  // Register file protocol handler for audio playback
+  protocol.handle('stune-audio', (request) => {
+    const filePath = decodeURIComponent(request.url.replace('stune-audio://', ''));
+    return net.fetch('file://' + filePath);
+  });
 
   createWindow();
 
@@ -111,15 +123,53 @@ ipcMain.handle('get-devices', async () => {
   return await getConnectedWalkman();
 });
 
-// Scan a specific Walkman device
+// MTP 用 mtp-cli が利用可能か（サイドバーで表示用）
+ipcMain.handle('is-mtp-cli-available', () => isMtpCliAvailable());
+
+// Scan a specific Walkman device（USB マウント or MTP）
 ipcMain.handle('scan-device', async (_event, mountPath: string) => {
+  if (isMtpPath(mountPath)) return await scanMtpDevice(mountPath);
   return await scanDevice(mountPath);
 });
 
-// Copy tracks from source to destination
+// Copy tracks from source to destination（USB または MTP へ）
 ipcMain.handle(
   'copy-tracks',
   async (_event, args: { sourcePaths: string[]; destinationDir: string }) => {
+    if (isMtpPath(args.destinationDir)) {
+      const total = args.sourcePaths.length;
+      const result = await mtpUpload(
+        args.destinationDir,
+        args.sourcePaths,
+        '/MUSIC',
+        (current, tot, currentFile) => {
+          if (mainWindow) {
+            mainWindow.webContents.send('transfer-progress', {
+              totalFiles: tot,
+              completedFiles: current,
+              currentFile: currentFile.split('/').pop() || currentFile,
+              percentage: Math.round((current / tot) * 100),
+              status: current === tot ? 'completed' : 'transferring',
+            });
+          }
+        }
+      );
+      if (!result.success && mainWindow) {
+        mainWindow.webContents.send('transfer-progress', {
+          totalFiles: total,
+          completedFiles: 0,
+          currentFile: '',
+          percentage: 0,
+          status: 'error',
+          error: result.error,
+        });
+      }
+      return {
+        success: result.success,
+        copiedCount: result.success ? total : 0,
+        errors: result.error ? [result.error] : [],
+      };
+    }
     return await copyTracks(
       args.sourcePaths,
       args.destinationDir,
@@ -129,6 +179,70 @@ ipcMain.handle(
         }
       }
     );
+  }
+);
+
+// Copy tracks to device with Artist/Album directory structure
+ipcMain.handle(
+  'copy-tracks-structured',
+  async (_event, args: { sourcePaths: string[]; deviceMountPath: string }) => {
+    if (!libraryDb) {
+      libraryDb = await loadLibraryDb();
+    }
+    const total = args.sourcePaths.length;
+    const errors: string[] = [];
+    let completed = 0;
+
+    const isMtp = isMtpPath(args.deviceMountPath);
+
+    for (const filePath of args.sourcePaths) {
+      const track = libraryDb.tracks[filePath];
+      const artist = (track?.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
+      const album = (track?.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
+      const fileName = path.basename(filePath);
+
+      if (mainWindow) {
+        mainWindow.webContents.send('transfer-progress', {
+          totalFiles: total,
+          completedFiles: completed,
+          currentFile: fileName,
+          percentage: Math.round((completed / total) * 100),
+          status: 'transferring',
+        });
+      }
+
+      try {
+        if (isMtp) {
+          const destDir = `/MUSIC/${artist}/${album}`;
+          const result = await mtpUpload(args.deviceMountPath, [filePath], destDir);
+          if (!result.success) {
+            errors.push(`${fileName}: ${result.error}`);
+          }
+        } else {
+          // USB mount: create directory and copy file
+          const destDir = path.join(args.deviceMountPath, 'MUSIC', artist, album);
+          await fs.promises.mkdir(destDir, { recursive: true });
+          const destPath = path.join(destDir, fileName);
+          await fs.promises.copyFile(filePath, destPath);
+        }
+      } catch (err: any) {
+        errors.push(`${fileName}: ${err.message}`);
+      }
+      completed++;
+    }
+
+    if (mainWindow) {
+      mainWindow.webContents.send('transfer-progress', {
+        totalFiles: total,
+        completedFiles: total,
+        currentFile: '',
+        percentage: 100,
+        status: errors.length > 0 ? 'error' : 'completed',
+        error: errors.length > 0 ? errors.join('\n') : undefined,
+      });
+    }
+
+    return { success: errors.length === 0, copiedCount: completed - errors.length, errors };
   }
 );
 
@@ -236,6 +350,191 @@ ipcMain.handle(
 ipcMain.handle('get-library-db-path', async () => {
   const userDataPath = app.getPath('userData');
   return path.join(userDataPath, 'sTuneLibrary.json');
+});
+
+// Browse MTP device directory (filtered)
+ipcMain.handle('mtp-browse', async (_event, args: { storageId: string; path: string }) => {
+  return await mtpBrowse(args.storageId, args.path);
+});
+
+// Download file from MTP device to temp directory for playback
+ipcMain.handle('mtp-download-file', async (_event, args: { storageId: string; remotePath: string }) => {
+  const os = require('os');
+  const tempDir = path.join(os.tmpdir(), 'stune-playback');
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+  return await mtpDownloadFile(args.storageId, args.remotePath, tempDir);
+});
+
+// Get MTP device info with all storages
+ipcMain.handle('mtp-get-devices', async () => {
+  return await getMtpDevices();
+});
+
+// Import files into library: select files, read metadata, copy to ~/Music/sTunes/Artist/Album/
+ipcMain.handle('import-to-library', async () => {
+  if (!mainWindow) return null;
+
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: 'Import Music Files',
+    filters: [
+      { name: 'Audio Files', extensions: ['mp3', 'flac', 'wav', 'aac', 'm4a', 'aiff', 'aif', 'ogg', 'wma', 'dsf', 'dff', 'opus'] },
+    ],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+
+  const managedDir = path.join(app.getPath('music'), 'sTunes');
+  const total = result.filePaths.length;
+  let imported = 0;
+  const errors: string[] = [];
+
+  for (const sourcePath of result.filePaths) {
+    const fileName = path.basename(sourcePath);
+    if (mainWindow) {
+      mainWindow.webContents.send('scan-progress', { current: imported, total });
+    }
+
+    try {
+      // Read metadata to determine Artist/Album
+      const meta = await readTrackMetadata(sourcePath);
+      const artist = (meta.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
+      const album = (meta.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
+
+      const destDir = path.join(managedDir, artist, album);
+      await fs.promises.mkdir(destDir, { recursive: true });
+      const destPath = path.join(destDir, fileName);
+
+      // Don't overwrite existing files
+      try {
+        await fs.promises.access(destPath);
+        // File already exists, skip
+      } catch {
+        await fs.promises.copyFile(sourcePath, destPath);
+      }
+
+      // Read metadata for the destination file and add to DB
+      const destMeta = await readTrackMetadata(destPath);
+      const stats = await fs.promises.stat(destPath);
+      libraryDb.tracks[destPath] = {
+        ...destMeta,
+        lastModified: stats.mtimeMs,
+        dateAdded: new Date().toISOString(),
+        rating: 0,
+        playCount: 0,
+        favorite: false,
+        tags: [],
+        comment: '',
+      };
+      imported++;
+    } catch (err: any) {
+      errors.push(`${fileName}: ${err.message}`);
+    }
+  }
+
+  // Add managed dir as a library path if not already present
+  if (!libraryDb.libraryPaths.includes(managedDir)) {
+    libraryDb.libraryPaths.push(managedDir);
+  }
+
+  await saveLibraryDb(libraryDb);
+
+  if (mainWindow) {
+    mainWindow.webContents.send('scan-progress', { current: total, total });
+  }
+
+  return { library: dbToLibrary(libraryDb), imported, errors };
+});
+
+// Import files by paths (for drag & drop - no dialog)
+ipcMain.handle('import-files-by-path', async (_event, filePaths: string[]) => {
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+
+  const AUDIO_EXTS = new Set(['.mp3', '.flac', '.wav', '.aac', '.m4a', '.aiff', '.aif', '.ogg', '.wma', '.dsf', '.dff', '.opus']);
+  const managedDir = path.join(app.getPath('music'), 'sTunes');
+  let imported = 0;
+  const errors: string[] = [];
+
+  // Separate directories and files
+  const dirs: string[] = [];
+  const files: string[] = [];
+  for (const p of filePaths) {
+    try {
+      const stat = await fs.promises.stat(p);
+      if (stat.isDirectory()) {
+        dirs.push(p);
+      } else if (AUDIO_EXTS.has(path.extname(p).toLowerCase())) {
+        files.push(p);
+      }
+    } catch { /* skip invalid paths */ }
+  }
+
+  // Add directories as library folders
+  for (const dir of dirs) {
+    libraryDb = await scanFolderIntoDb(libraryDb, dir, (current, total) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('scan-progress', { current, total });
+      }
+    });
+  }
+
+  // Import individual files to managed folder
+  const total = files.length;
+  for (const sourcePath of files) {
+    const fileName = path.basename(sourcePath);
+    if (mainWindow) {
+      mainWindow.webContents.send('scan-progress', { current: imported, total });
+    }
+
+    try {
+      const meta = await readTrackMetadata(sourcePath);
+      const artist = (meta.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
+      const album = (meta.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
+
+      const destDir = path.join(managedDir, artist, album);
+      await fs.promises.mkdir(destDir, { recursive: true });
+      const destPath = path.join(destDir, fileName);
+
+      try {
+        await fs.promises.access(destPath);
+      } catch {
+        await fs.promises.copyFile(sourcePath, destPath);
+      }
+
+      const destMeta = await readTrackMetadata(destPath);
+      const stats = await fs.promises.stat(destPath);
+      libraryDb.tracks[destPath] = {
+        ...destMeta,
+        lastModified: stats.mtimeMs,
+        dateAdded: new Date().toISOString(),
+        rating: 0,
+        playCount: 0,
+        favorite: false,
+        tags: [],
+        comment: '',
+      };
+      imported++;
+    } catch (err: any) {
+      errors.push(`${fileName}: ${err.message}`);
+    }
+  }
+
+  if (files.length > 0 && !libraryDb.libraryPaths.includes(managedDir)) {
+    libraryDb.libraryPaths.push(managedDir);
+  }
+
+  await saveLibraryDb(libraryDb);
+
+  if (mainWindow) {
+    mainWindow.webContents.send('scan-progress', { current: total, total });
+  }
+
+  return { library: dbToLibrary(libraryDb), imported: imported + dirs.length, errors };
 });
 
 // Get disk usage for a path
