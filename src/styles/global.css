@@ -987,6 +987,46 @@ body {
   white-space: nowrap;
 }
 
+.folder-card-wrapper {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+}
+
+.folder-card-wrapper .folder-card {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.folder-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.folder-card-wrapper:hover .folder-delete-btn {
+  opacity: 1;
+}
+
+.folder-delete-btn:hover {
+  background: var(--danger, #e53e3e);
+  color: white;
+  border-color: var(--danger, #e53e3e);
+}
+
 /* ===== Device Browser ===== */
 .device-browser {
   flex: 1;
@@ -1517,6 +1557,16 @@ body {
   white-space: pre-wrap;
   text-align: left;
   font-size: 12px;
+}
+
+.dialog-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  line-height: 1.5;
 }
 
 /* ===== Empty State ===== */
@@ -2113,4 +2163,30 @@ body {
 .btn-transfer-album:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.album-section-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.album-section-actions .btn-transfer-album {
+  margin-top: 0;
+}
+
+.album-delete-btn {
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.album-section:hover .album-delete-btn {
+  opacity: 0.6;
+}
+
+.album-delete-btn:hover {
+  opacity: 1 !important;
+  color: var(--danger, #e53e3e) !important;
 }

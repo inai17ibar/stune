@@ -323,10 +323,10 @@ export function dbToLibrary(db: LibraryDatabase) {
     coverArt: coverArtToDataUri(t.coverArt),
   }));
 
-  // Group into albums by album name only (merge multiple artists into one album)
+  // Group into albums by albumArtist + album name
   const albumMap = new Map<string, any[]>();
   for (const track of tracks) {
-    const key = track.album;
+    const key = `${track.albumArtist || track.artist}\0${track.album}`;
     if (!albumMap.has(key)) {
       albumMap.set(key, []);
     }

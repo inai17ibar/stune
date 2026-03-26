@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld('stune', {
     ipcRenderer.invoke('copy-tracks-structured', { sourcePaths, deviceMountPath }),
   deleteTracks: (filePaths: string[]) =>
     ipcRenderer.invoke('delete-tracks', filePaths),
+  deleteLibraryTracks: (filePaths: string[], fromDisk: boolean) =>
+    ipcRenderer.invoke('delete-library-tracks', { filePaths, fromDisk }),
   deleteDeviceTracks: (mountPath: string, filePaths: string[]) =>
     ipcRenderer.invoke('delete-device-tracks', { mountPath, filePaths }),
 

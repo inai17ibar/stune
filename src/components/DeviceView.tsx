@@ -117,7 +117,7 @@ export default function DeviceView() {
   // ---- MTP state ----------------------------------------------------------
   const [mtpDevice, setMtpDevice] = useState<MtpDeviceDetail | null>(null);
   const [activeStorageId, setActiveStorageId] = useState<string>('');
-  const [currentPath, setCurrentPath] = useState('/Music');
+  const [currentPath, setCurrentPath] = useState('/');
   const [files, setFiles] = useState<MtpFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [playingFile, setPlayingFile] = useState<string | null>(null);
@@ -173,13 +173,14 @@ export default function DeviceView() {
     if (!activeDevice || isUsb || !window.stune) return;
     window.stune.mtpGetDevices().then((devices: MtpDeviceDetail[]) => {
       if (devices.length > 0) {
-        const dev = devices[0];
-        setMtpDevice(dev);
-        const defaultStorage =
-          dev.storages.length > 1
-            ? dev.storages[1].storageId
-            : dev.storages[0].storageId;
-        setActiveStorageId(defaultStorage);
+        // Extract storageId from activeDevice.mountPath (e.g. "mtp://1" -> "1")
+        const activeStorageFromPath = activeDevice.mountPath.replace('mtp://', '').split('/')[0];
+        // Find the matching device entry, or fall back to first
+        const matchedDev = devices.find(
+          (d: MtpDeviceDetail) => d.storageId === activeStorageFromPath
+        ) || devices[0];
+        setMtpDevice(matchedDev);
+        setActiveStorageId(activeStorageFromPath || matchedDev.storageId);
       }
     });
   }, [activeDevice, isUsb]);
@@ -216,6 +217,52 @@ export default function DeviceView() {
     setDeleteError(null);
   }, [activeDevice, clearSelection]);
 
+  // ---- MTP selection state -------------------------------------------------
+  const [mtpSelectedFiles, setMtpSelectedFiles] = useState<Set<string>>(new Set());
+
+  const toggleMtpFileSelection = (fullPath: string) => {
+    setMtpSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(fullPath)) next.delete(fullPath);
+      else next.add(fullPath);
+      return next;
+    });
+  };
+
+  const handleMtpDeleteSelected_paths = async (paths: string[]) => {
+    if (!window.stune || paths.length === 0 || !activeDevice) return;
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await window.stune.deleteDeviceTracks(activeDevice.mountPath, paths);
+      if (!result.success) {
+        setDeleteError(`削除に失敗: ${result.errors.join(', ')}`);
+      }
+      setMtpSelectedFiles(new Set());
+      // Refresh the current directory
+      if (activeStorageId) {
+        await browse(activeStorageId, currentPath);
+      }
+      // Rescan device
+      if (result.device) {
+        setActiveDevice({ ...activeDevice, ...result.device });
+      }
+    } catch (err) {
+      setDeleteError(`削除に失敗: ${err}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleMtpDeleteSelected = async () => {
+    if (mtpSelectedFiles.size === 0) return;
+    const paths = Array.from(mtpSelectedFiles);
+    const confirmMsg = `${paths.length} 曲をデバイスから削除しますか？この操作は取り消せません。`;
+    if (!confirm(confirmMsg)) return;
+    await handleMtpDeleteSelected_paths(paths);
+  };
+
   // ---- MTP navigation helpers ---------------------------------------------
 
   const navigateTo = (dirPath: string) => setCurrentPath(dirPath);
@@ -230,12 +277,26 @@ export default function DeviceView() {
 
   const switchStorage = (storageId: string) => {
     setActiveStorageId(storageId);
-    setCurrentPath('/Music');
+    setCurrentPath('/');
     setFiles([]);
+    setMtpSelectedFiles(new Set());
+  };
+
+  const stopMtpPlayback = () => {
+    setAudioSrc(null);
+    setPlayingFile(null);
+    setAudioName('');
   };
 
   const handleMtpPlay = async (file: MtpFileEntry) => {
     if (!window.stune || downloadingFile) return;
+
+    // Toggle: stop if already playing this file
+    if (playingFile === file.fullPath) {
+      stopMtpPlayback();
+      return;
+    }
+
     setDownloadingFile(file.fullPath);
     try {
       const localPath = await window.stune.mtpDownloadFile(
@@ -598,6 +659,14 @@ export default function DeviceView() {
   const currentStorage = mtpDevice?.storages.find(
     (s) => s.storageId === activeStorageId
   );
+  const currentStorageIndex = mtpDevice?.storages.findIndex(
+    (s) => s.storageId === activeStorageId
+  ) ?? 0;
+  const breadcrumbName = mtpDevice
+    ? mtpDevice.storages.length > 1
+      ? `${mtpDevice.name?.replace(/ \(.*\)$/, '')} (${currentStorageIndex === 0 ? 'Internal' : 'SD Card'})`
+      : (mtpDevice.name || 'Device')
+    : 'Device';
 
   return (
     <div className="device-view">
@@ -629,7 +698,7 @@ export default function DeviceView() {
       {/* Breadcrumb */}
       <div className="breadcrumb">
         <button className="breadcrumb-item" onClick={navigateToRoot}>
-          {mtpDevice?.name || 'Device'}
+          {breadcrumbName}
         </button>
         {pathParts.map((part, i) => (
           <span key={i}>
@@ -649,6 +718,36 @@ export default function DeviceView() {
         )}
       </div>
 
+      {/* MTP delete action bar */}
+      {mtpSelectedFiles.size > 0 && (
+        <div className="device-delete-bar">
+          <span className="device-delete-info">
+            {mtpSelectedFiles.size} 曲を選択中
+          </span>
+          <div className="device-delete-actions">
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => setMtpSelectedFiles(new Set())}
+            >
+              選択解除
+            </button>
+            <button
+              type="button"
+              className="btn btn-small btn-danger"
+              onClick={handleMtpDeleteSelected}
+              disabled={deleting}
+            >
+              {deleting ? '削除中...' : `🗑 選択した ${mtpSelectedFiles.size} 曲を削除`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleteError && (
+        <div className="error-banner">{deleteError}</div>
+      )}
+
       {loading ? (
         <div className="empty-state center">
           <div className="spinner large" />
@@ -656,18 +755,54 @@ export default function DeviceView() {
         </div>
       ) : (
         <div className="device-browser">
+          {/* Toolbar */}
+          {audioFiles.length > 0 && (
+            <div className="device-toolbar">
+              <div className="device-toolbar-actions">
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => {
+                    if (mtpSelectedFiles.size === audioFiles.length) {
+                      setMtpSelectedFiles(new Set());
+                    } else {
+                      setMtpSelectedFiles(new Set(audioFiles.map((f) => f.fullPath)));
+                    }
+                  }}
+                >
+                  {mtpSelectedFiles.size === audioFiles.length && audioFiles.length > 0
+                    ? '選択解除'
+                    : `すべて選択 (${audioFiles.length})`}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Folders */}
           {folders.length > 0 && (
             <div className="folder-grid">
               {folders.map((f) => (
-                <button
-                  key={f.objectId}
-                  className="folder-card"
-                  onClick={() => navigateTo(f.fullPath)}
-                >
-                  <span className="folder-card-icon">&#128193;</span>
-                  <span className="folder-card-name">{f.name}</span>
-                </button>
+                <div key={f.objectId} className="folder-card-wrapper">
+                  <button
+                    type="button"
+                    className="folder-card"
+                    onClick={() => navigateTo(f.fullPath)}
+                  >
+                    <span className="folder-card-icon">&#128193;</span>
+                    <span className="folder-card-name">{f.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="folder-delete-btn"
+                    onClick={() => {
+                      if (!confirm(`フォルダ「${f.name}」を削除しますか？中のファイルもすべて削除されます。`)) return;
+                      handleMtpDeleteSelected_paths([f.fullPath]);
+                    }}
+                    title={`${f.name} を削除`}
+                  >
+                    🗑
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -676,6 +811,7 @@ export default function DeviceView() {
           {audioFiles.length > 0 && (
             <div className="track-list">
               <div className="track-list-header">
+                <div className="track-col track-col-checkbox">&nbsp;</div>
                 <div className="track-col track-col-play-btn">&nbsp;</div>
                 <div className="track-col track-col-num">#</div>
                 <div className="track-col track-col-title">Title</div>
@@ -692,18 +828,28 @@ export default function DeviceView() {
                     file.name.split('.').pop()?.toUpperCase() || '';
                   const isPlaying = playingFile === file.fullPath;
                   const isDownloading = downloadingFile === file.fullPath;
+                  const isFileSelected = mtpSelectedFiles.has(file.fullPath);
 
                   return (
                     <div
                       key={file.objectId}
-                      className={`track-row ${isPlaying ? 'playing' : ''}`}
+                      className={`track-row ${isPlaying ? 'playing' : ''} ${isFileSelected ? 'selected' : ''}`}
                       onDoubleClick={() => handleMtpPlay(file)}
                     >
+                      <div className="track-col track-col-checkbox">
+                        <input
+                          type="checkbox"
+                          className="usb-checkbox"
+                          checked={isFileSelected}
+                          onChange={() => toggleMtpFileSelection(file.fullPath)}
+                        />
+                      </div>
                       <div className="track-col track-col-play-btn">
                         {isDownloading ? (
                           <div className="spinner" />
                         ) : (
                           <button
+                            type="button"
                             className="play-btn"
                             onClick={() => handleMtpPlay(file)}
                             title="Play"
@@ -735,7 +881,7 @@ export default function DeviceView() {
 
           {folders.length === 0 && audioFiles.length === 0 && (
             <div className="empty-state">
-              <p>This folder is empty</p>
+              <p>このフォルダは空です</p>
             </div>
           )}
         </div>
@@ -772,11 +918,7 @@ export default function DeviceView() {
           <button
             type="button"
             className="player-close"
-            onClick={() => {
-              setAudioSrc(null);
-              setPlayingFile(null);
-              setAudioName('');
-            }}
+            onClick={stopMtpPlayback}
           >
             &times;
           </button>

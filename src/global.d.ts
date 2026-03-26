@@ -46,6 +46,10 @@ interface STuneAPI {
   deleteTracks: (
     filePaths: string[]
   ) => Promise<{ path: string; success: boolean; error?: string }[]>;
+  deleteLibraryTracks: (
+    filePaths: string[],
+    fromDisk: boolean
+  ) => Promise<{ library: any; deletedCount: number; errors: string[] }>;
   deleteDeviceTracks: (
     mountPath: string,
     filePaths: string[]
