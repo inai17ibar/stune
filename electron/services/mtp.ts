@@ -116,9 +116,10 @@ function runMtpCommand<T = unknown>(request: object): Promise<T | null> {
     let stdout = '';
     let stderr = '';
     const timeout = setTimeout(() => {
+      console.error('[mtp-cli] timeout after 120s, request:', JSON.stringify(request).slice(0, 200));
       child.kill('SIGKILL');
       resolve(null);
-    }, 15000);
+    }, 120000);
 
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -127,21 +128,28 @@ function runMtpCommand<T = unknown>(request: object): Promise<T | null> {
       stderr += chunk.toString();
     });
 
-    child.on('error', () => {
+    child.on('error', (err) => {
       clearTimeout(timeout);
+      console.error('[mtp-cli] spawn error:', err.message);
       resolve(null);
     });
     child.on('close', (code) => {
       clearTimeout(timeout);
+      if (stderr) console.error('[mtp-cli] stderr:', stderr.trim());
       if (code !== 0) {
+        console.error('[mtp-cli] exited with code', code, 'stdout:', stdout.trim());
         resolve(null);
         return;
       }
       try {
         const line = stdout.trim().split('\n').find((l) => l.startsWith('{'));
         if (line) resolve(JSON.parse(line) as T);
-        else resolve(null);
+        else {
+          console.error('[mtp-cli] no JSON in output:', stdout.trim());
+          resolve(null);
+        }
       } catch {
+        console.error('[mtp-cli] JSON parse error, stdout:', stdout.trim());
         resolve(null);
       }
     });
@@ -163,19 +171,24 @@ export async function getMtpDevices(): Promise<MtpDeviceInfo[]> {
   });
   if (!res || res.error || !res.storages?.length) return [];
 
-  const storageId = String(res.storages[0].storageId ?? 0);
   const name = res.deviceName || 'MTP Device';
+  const isWalkman = /WALKMAN|NW-|SONY/i.test(name);
 
-  return [
-    {
-      name,
-      mountPath: `${MTP_PROTOCOL_PREFIX}${storageId}`,
-      isWalkman: /WALKMAN|NW-|SONY/i.test(name),
+  // Return one entry per storage so internal and SD card appear as separate targets
+  return res.storages.map((s, i) => {
+    const sid = String(s.storageId ?? i);
+    const storageSuffix = res.storages!.length > 1
+      ? (i === 0 ? ' (内蔵)' : ' (SDカード)')
+      : '';
+    return {
+      name: `${name}${storageSuffix}`,
+      mountPath: `${MTP_PROTOCOL_PREFIX}${sid}`,
+      isWalkman,
       isMtp: true,
-      storageId,
-      storages: res.storages,
-    },
-  ];
+      storageId: sid,
+      storages: res.storages!,
+    };
+  });
 }
 
 /**
@@ -348,6 +361,31 @@ export async function mtpDownloadFile(
   // ダウンロードされたファイルのローカルパス
   const fileName = remotePath.split('/').pop() || '';
   return path.join(destDir, fileName);
+}
+
+/**
+ * MTP デバイス上のファイルを削除する。
+ * paths は MTP 上のフルパス（例: "/MUSIC/Artist/Album/track.flac"）。
+ */
+export async function mtpDeleteFiles(
+  storageId: string,
+  paths: string[]
+): Promise<{ success: boolean; deletedCount: number; error?: string }> {
+  if (paths.length === 0) return { success: true, deletedCount: 0 };
+  const res = await runMtpCommand<{ ok?: boolean; deletedCount?: number; error?: string; errors?: string[] }>({
+    cmd: 'delete',
+    storageId,
+    paths,
+  });
+  if (!res) return { success: false, deletedCount: 0, error: 'MTP delete failed: no response' };
+  // New response: { ok, deletedCount, errors[] } — error field set only when ALL fail
+  if (res.error && (res.deletedCount ?? 0) === 0) {
+    return { success: false, deletedCount: 0, error: res.error };
+  }
+  const deletedCount = res.deletedCount ?? 0;
+  const errorMsg = res.errors?.length ? res.errors.join('; ') : undefined;
+  if (errorMsg) console.error('[mtp] Delete partial errors:', errorMsg);
+  return { success: deletedCount > 0, deletedCount, error: errorMsg };
 }
 
 /**

@@ -987,9 +987,302 @@ body {
   white-space: nowrap;
 }
 
+.folder-card-wrapper {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+}
+
+.folder-card-wrapper .folder-card {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.folder-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.folder-card-wrapper:hover .folder-delete-btn {
+  opacity: 1;
+}
+
+.folder-delete-btn:hover {
+  background: var(--danger, #e53e3e);
+  color: white;
+  border-color: var(--danger, #e53e3e);
+}
+
 /* ===== Device Browser ===== */
 .device-browser {
   flex: 1;
+  overflow-y: auto;
+}
+
+/* ===== Device Toolbar (USB) ===== */
+.device-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+}
+
+.device-search {
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.device-search:focus {
+  border-color: var(--accent);
+}
+
+.device-search::placeholder {
+  color: var(--text-muted);
+}
+
+.device-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.device-delete-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(217, 48, 37, 0.12);
+  border: 1px solid rgba(217, 48, 37, 0.4);
+  border-radius: var(--radius-sm);
+  margin: 0 0 12px;
+}
+
+.device-delete-info {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.device-delete-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ===== Button Variants ===== */
+.btn-small {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.btn-danger {
+  background: #d93025;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #c22822;
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== Error Banner ===== */
+.error-banner {
+  padding: 8px 14px;
+  margin: 4px 0 8px;
+  background: rgba(217, 48, 37, 0.15);
+  border: 1px solid rgba(217, 48, 37, 0.4);
+  border-radius: var(--radius-sm);
+  color: #f87171;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ===== USB Device Tree View ===== */
+.usb-artist-group {
+  border-bottom: 1px solid var(--border);
+}
+
+.usb-artist-group:last-child {
+  border-bottom: none;
+}
+
+.usb-artist-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.usb-artist-header:hover {
+  background: var(--bg-hover);
+}
+
+.usb-expand-icon {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.usb-artist-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usb-artist-count {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.usb-album-group {
+  padding-left: 16px;
+}
+
+.usb-album-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.usb-checkbox {
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.usb-album-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font);
+  cursor: pointer;
+  text-align: left;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+
+.usb-album-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.usb-album-cover {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.usb-album-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.usb-album-year {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  flex-shrink: 0;
+}
+
+.usb-album-count {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.usb-track-list {
+  margin-left: 22px;
+  margin-bottom: 8px;
+}
+
+.track-col-checkbox {
+  width: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== View Header extras ===== */
+.view-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.view-header-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.view-header-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: 0.5px;
 }
 
 /* ===== Play Button in Track Row ===== */
@@ -1264,6 +1557,16 @@ body {
   white-space: pre-wrap;
   text-align: left;
   font-size: 12px;
+}
+
+.dialog-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  line-height: 1.5;
 }
 
 /* ===== Empty State ===== */
@@ -1816,4 +2119,74 @@ body {
 .btn-ghost:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+/* Transfer destination bar */
+.transfer-dest-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  margin: 0 0 12px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.transfer-dest-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* Per-album transfer button */
+.btn-transfer-album {
+  margin-top: 6px;
+  background: var(--accent);
+  color: #fff;
+  padding: 4px 12px;
+  font-size: 11px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-transfer-album:hover {
+  background: var(--accent-hover);
+}
+
+.btn-transfer-album:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.album-section-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.album-section-actions .btn-transfer-album {
+  margin-top: 0;
+}
+
+.album-delete-btn {
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.album-section:hover .album-delete-btn {
+  opacity: 0.6;
+}
+
+.album-delete-btn:hover {
+  opacity: 1 !important;
+  color: var(--danger, #e53e3e) !important;
 }

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { scanLibrary, scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices } from './services/device';
 import { copyTracks } from './services/transfer';
-import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices } from './services/mtp';
+import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
 import { readTrackMetadata } from './services/metadata';
 import {
   loadLibraryDb,
@@ -195,17 +195,35 @@ ipcMain.handle(
 
     const isMtp = isMtpPath(args.deviceMountPath);
 
+    // Build ordered filename: prefix with disc/track number so Walkman plays in order
+    const tmpDir = isMtp ? path.join(app.getPath('temp'), 'stunes-transfer') : '';
+    if (isMtp && tmpDir) {
+      await fs.promises.mkdir(tmpDir, { recursive: true });
+    }
+
     for (const filePath of args.sourcePaths) {
       const track = libraryDb.tracks[filePath];
       const artist = (track?.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
       const album = (track?.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
-      const fileName = path.basename(filePath);
+      const origFileName = path.basename(filePath);
+
+      // Generate track-number-prefixed filename for correct playback order
+      const disc = track?.discNumber || 1;
+      const trackNum = track?.trackNumber || 0;
+      const prefix = trackNum > 0
+        ? (disc > 1 ? `${disc}-${String(trackNum).padStart(2, '0')}` : String(trackNum).padStart(2, '0'))
+        : '';
+      // Only prefix if filename doesn't already start with the track number
+      const alreadyPrefixed = prefix && origFileName.match(/^\d+[-.\s]/);
+      const destFileName = (!alreadyPrefixed && prefix)
+        ? `${prefix} ${origFileName}`
+        : origFileName;
 
       if (mainWindow) {
         mainWindow.webContents.send('transfer-progress', {
           totalFiles: total,
           completedFiles: completed,
-          currentFile: fileName,
+          currentFile: origFileName,
           percentage: Math.round((completed / total) * 100),
           status: 'transferring',
         });
@@ -214,21 +232,33 @@ ipcMain.handle(
       try {
         if (isMtp) {
           const destDir = `/MUSIC/${artist}/${album}`;
-          const result = await mtpUpload(args.deviceMountPath, [filePath], destDir);
+          // For MTP, create a symlink with the desired filename so mtp-cli uses it
+          const symlinkPath = path.join(tmpDir, destFileName);
+          try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
+          await fs.promises.symlink(filePath, symlinkPath);
+          console.log(`[transfer] MTP upload: ${destFileName} -> ${destDir} (storage: ${args.deviceMountPath})`);
+          const result = await mtpUpload(args.deviceMountPath, [symlinkPath], destDir);
+          try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
           if (!result.success) {
-            errors.push(`${fileName}: ${result.error}`);
+            console.error(`[transfer] MTP upload failed: ${destFileName}: ${result.error}`);
+            errors.push(`${destFileName}: ${result.error}`);
           }
         } else {
-          // USB mount: create directory and copy file
+          // USB mount: create directory and copy file with prefixed name
           const destDir = path.join(args.deviceMountPath, 'MUSIC', artist, album);
           await fs.promises.mkdir(destDir, { recursive: true });
-          const destPath = path.join(destDir, fileName);
+          const destPath = path.join(destDir, destFileName);
           await fs.promises.copyFile(filePath, destPath);
         }
       } catch (err: any) {
-        errors.push(`${fileName}: ${err.message}`);
+        errors.push(`${origFileName}: ${err.message}`);
       }
       completed++;
+    }
+
+    // Clean up temp directory
+    if (isMtp && tmpDir) {
+      try { await fs.promises.rm(tmpDir, { recursive: true }); } catch { /* ignore */ }
     }
 
     if (mainWindow) {
@@ -246,12 +276,79 @@ ipcMain.handle(
   }
 );
 
+// Delete tracks from a device (USB or MTP), then rescan to update the view
+ipcMain.handle(
+  'delete-device-tracks',
+  async (_event, args: { mountPath: string; filePaths: string[] }) => {
+    // MTP device
+    if (isMtpPath(args.mountPath)) {
+      const storageId = args.mountPath.replace('mtp://', '').split('/')[0];
+      // Convert full virtual paths to MTP-relative paths
+      const mtpPaths = args.filePaths.map((fp) => {
+        // filePaths may be "mtp://0/MUSIC/Artist/Album/track.flac" or just "/MUSIC/..."
+        if (fp.startsWith('mtp://')) {
+          const rest = fp.slice(fp.indexOf('/', 6)); // skip "mtp://X"
+          return rest || fp;
+        }
+        return fp;
+      });
+      const result = await mtpDeleteFiles(storageId, mtpPaths);
+      let device: any = null;
+      try { device = await scanMtpDevice(args.mountPath); } catch { /* ignore */ }
+      return {
+        success: result.success,
+        deletedCount: result.deletedCount,
+        errors: result.error ? [result.error] : [],
+        device,
+      };
+    }
+
+    // USB-mounted device
+    const errors: string[] = [];
+    for (const filePath of args.filePaths) {
+      try {
+        // Safety: only delete files that are actually on the device
+        if (!filePath.startsWith(args.mountPath)) {
+          errors.push(`${filePath}: not on device ${args.mountPath}`);
+          continue;
+        }
+        await fs.promises.unlink(filePath);
+
+        // Clean up empty parent directories up to the MUSIC folder
+        const musicRoot = path.join(args.mountPath, 'MUSIC');
+        let dir = path.dirname(filePath);
+        while (dir.startsWith(musicRoot) && dir !== musicRoot) {
+          const entries = await fs.promises.readdir(dir);
+          if (entries.length === 0) {
+            await fs.promises.rmdir(dir);
+            dir = path.dirname(dir);
+          } else {
+            break;
+          }
+        }
+      } catch (err: any) {
+        errors.push(`${path.basename(filePath)}: ${err.message}`);
+      }
+    }
+
+    // Rescan device to get updated track list
+    const updatedDevice = await scanDevice(args.mountPath);
+
+    return {
+      success: errors.length === 0,
+      deletedCount: args.filePaths.length - errors.length,
+      errors,
+      device: updatedDevice,
+    };
+  }
+);
+
 // Read metadata for a single track
 ipcMain.handle('read-metadata', async (_event, filePath: string) => {
   return await readTrackMetadata(filePath);
 });
 
-// Delete tracks
+// Delete tracks (file system only — legacy)
 ipcMain.handle('delete-tracks', async (_event, filePaths: string[]) => {
   const results: { path: string; success: boolean; error?: string }[] = [];
   for (const filePath of filePaths) {
@@ -264,6 +361,35 @@ ipcMain.handle('delete-tracks', async (_event, filePaths: string[]) => {
   }
   return results;
 });
+
+// Delete tracks from the library DB, optionally also from disk, then return updated library
+ipcMain.handle(
+  'delete-library-tracks',
+  async (_event, args: { filePaths: string[]; fromDisk: boolean }) => {
+    if (!libraryDb) {
+      libraryDb = await loadLibraryDb();
+    }
+    const errors: string[] = [];
+
+    for (const filePath of args.filePaths) {
+      if (args.fromDisk) {
+        try {
+          await fs.promises.unlink(filePath);
+        } catch (err: any) {
+          // File might already be deleted — still remove from DB
+          if (err.code !== 'ENOENT') {
+            errors.push(`${path.basename(filePath)}: ${err.message}`);
+          }
+        }
+      }
+      delete libraryDb.tracks[filePath];
+    }
+
+    await saveLibraryDb(libraryDb);
+    const library = dbToLibrary(libraryDb);
+    return { library, deletedCount: args.filePaths.length - errors.length, errors };
+  }
+);
 
 // Show file in Finder
 ipcMain.handle('show-in-finder', async (_event, filePath: string) => {

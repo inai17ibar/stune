@@ -53,9 +53,16 @@ export default function TransferDialog() {
         )}
 
         {transferJob.status === 'completed' && (
-          <p className="dialog-message success">
-            All files transferred successfully.
-          </p>
+          <>
+            <p className="dialog-message success">
+              All files transferred successfully.
+            </p>
+            {transferJob.destination.startsWith('mtp://') && (
+              <p className="dialog-hint">
+                Walkmanの音楽一覧に反映するには、USBケーブルを一度抜いてください。Walkmanが自動的にデータベースを更新します。
+              </p>
+            )}
+          </>
         )}
 
         {transferJob.status === 'error' && (

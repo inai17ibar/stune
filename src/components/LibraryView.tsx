@@ -5,6 +5,7 @@ import type { TrackMetadata, Album } from '../types';
 export default function LibraryView() {
   const {
     library,
+    setLibrary,
     isScanning,
     searchQuery,
     sortKey,
@@ -12,7 +13,6 @@ export default function LibraryView() {
     selectedTracks,
     toggleTrackSelection,
     clearSelection,
-    selectAllTracks,
     nowPlaying,
     playAlbum,
     setNowPlaying,
@@ -21,6 +21,7 @@ export default function LibraryView() {
   } = useStore();
   const [isTransferring, setIsTransferring] = useState(false);
   const [transferTarget, setTransferTarget] = useState(0);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const albumGroups = useMemo(() => {
     if (!library) return [];
@@ -71,11 +72,6 @@ export default function LibraryView() {
     return albums;
   }, [library, searchQuery, sortKey, sortOrder]);
 
-  const allTrackPaths = useMemo(
-    () => albumGroups.flatMap((a) => a.tracks.map((t) => t.filePath)),
-    [albumGroups]
-  );
-
   if (!library) {
     return (
       <div className="empty-state center">
@@ -103,10 +99,9 @@ export default function LibraryView() {
     );
   }
 
-  const handleTransferToWalkman = async () => {
-    if (!window.stune || selectedTracks.size === 0 || devices.length === 0) return;
+  const doTransfer = async (sourcePaths: string[]) => {
+    if (!window.stune || sourcePaths.length === 0 || devices.length === 0) return;
     const device = devices[transferTarget] || devices[0];
-    const sourcePaths = Array.from(selectedTracks);
 
     setIsTransferring(true);
     setTransferJob({
@@ -128,6 +123,44 @@ export default function LibraryView() {
     }
   };
 
+  const handleTransferSelected = () => doTransfer(Array.from(selectedTracks));
+  const handleTransferAlbum = (album: Album) => doTransfer(album.tracks.map((t) => t.filePath));
+
+  const doDelete = async (filePaths: string[], fromDisk: boolean) => {
+    if (!window.stune || filePaths.length === 0) return;
+    setIsDeleting(true);
+    try {
+      const result = await window.stune.deleteLibraryTracks(filePaths, fromDisk);
+      if (result.library) setLibrary(result.library);
+      clearSelection();
+      if (result.errors.length > 0) {
+        console.error('Delete errors:', result.errors);
+      }
+    } catch (err) {
+      console.error('Delete failed:', err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleDeleteSelected = (fromDisk: boolean) => {
+    const paths = Array.from(selectedTracks);
+    const msg = fromDisk
+      ? `${paths.length} 曲をライブラリとディスクから完全に削除しますか？この操作は取り消せません。`
+      : `${paths.length} 曲をライブラリから削除しますか？ファイルはディスクに残ります。`;
+    if (!confirm(msg)) return;
+    doDelete(paths, fromDisk);
+  };
+
+  const handleDeleteAlbum = (album: Album, fromDisk: boolean) => {
+    const paths = album.tracks.map((t) => t.filePath);
+    const msg = fromDisk
+      ? `アルバム「${album.name}」(${paths.length} 曲) をライブラリとディスクから完全に削除しますか？`
+      : `アルバム「${album.name}」(${paths.length} 曲) をライブラリから削除しますか？`;
+    if (!confirm(msg)) return;
+    doDelete(paths, fromDisk);
+  };
+
   return (
     <div className="library-view">
       <div className="view-header">
@@ -137,47 +170,77 @@ export default function LibraryView() {
         </span>
       </div>
 
-      {selectedTracks.size > 0 && (
+      {/* Transfer bar - always visible when device connected */}
+      {devices.length > 0 && (
+        <div className="transfer-dest-bar">
+          <span className="transfer-dest-label">転送先:</span>
+          <select
+            className="transfer-target-select"
+            value={transferTarget}
+            onChange={(e) => setTransferTarget(Number(e.target.value))}
+            aria-label="Transfer destination"
+          >
+            {devices.map((d, i) => (
+              <option key={d.mountPath} value={i}>{d.name}</option>
+            ))}
+          </select>
+          {selectedTracks.size > 0 && (
+            <>
+              <button
+                type="button"
+                className="btn btn-primary btn-small"
+                onClick={handleTransferSelected}
+                disabled={isTransferring}
+              >
+                選択中の {selectedTracks.size} 曲を転送
+              </button>
+              <button
+                type="button"
+                className="btn btn-small btn-danger"
+                onClick={() => handleDeleteSelected(false)}
+                disabled={isDeleting}
+              >
+                ライブラリから削除
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-small"
+                onClick={clearSelection}
+              >
+                選択解除
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Selection bar - when tracks selected and no device */}
+      {selectedTracks.size > 0 && devices.length === 0 && (
         <div className="selection-action-bar">
-          <span className="selection-count">{selectedTracks.size} tracks selected</span>
+          <span className="selection-count">{selectedTracks.size} 曲を選択中</span>
           <div className="selection-actions">
-            {devices.length > 0 && (
-              <div className="transfer-controls">
-                {devices.length > 1 && (
-                  <select
-                    className="transfer-target-select"
-                    value={transferTarget}
-                    onChange={(e) => setTransferTarget(Number(e.target.value))}
-                    aria-label="Transfer destination"
-                  >
-                    {devices.map((d, i) => (
-                      <option key={d.mountPath} value={i}>{d.name}</option>
-                    ))}
-                  </select>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleTransferToWalkman}
-                  disabled={isTransferring}
-                >
-                  Transfer to {(devices[transferTarget] || devices[0]).name || 'Walkman'}
-                </button>
-              </div>
-            )}
             <button
               type="button"
-              className="btn btn-ghost"
-              onClick={() => selectAllTracks(allTrackPaths)}
+              className="btn btn-ghost btn-small"
+              onClick={clearSelection}
             >
-              Select All
+              選択解除
             </button>
             <button
               type="button"
-              className="btn btn-ghost"
-              onClick={clearSelection}
+              className="btn btn-small btn-danger"
+              onClick={() => handleDeleteSelected(false)}
+              disabled={isDeleting}
             >
-              Clear
+              ライブラリから削除
+            </button>
+            <button
+              type="button"
+              className="btn btn-small btn-danger"
+              onClick={() => handleDeleteSelected(true)}
+              disabled={isDeleting}
+            >
+              ディスクから削除
             </button>
           </div>
         </div>
@@ -198,6 +261,11 @@ export default function LibraryView() {
                 playAlbum(album.tracks, index);
               }
             }}
+            showTransfer={devices.length > 0}
+            isTransferring={isTransferring}
+            onTransferAlbum={() => handleTransferAlbum(album)}
+            isDeleting={isDeleting}
+            onDeleteAlbum={(fromDisk) => handleDeleteAlbum(album, fromDisk)}
           />
         ))}
       </div>
@@ -211,12 +279,22 @@ function AlbumSection({
   onToggleTrack,
   nowPlayingPath,
   onPlayTrack,
+  showTransfer,
+  isTransferring,
+  onTransferAlbum,
+  isDeleting,
+  onDeleteAlbum,
 }: {
   album: Album;
   selectedTracks: Set<string>;
   onToggleTrack: (filePath: string) => void;
   nowPlayingPath: string | null;
   onPlayTrack: (track: TrackMetadata, index: number) => void;
+  showTransfer?: boolean;
+  isTransferring?: boolean;
+  onTransferAlbum?: () => void;
+  isDeleting?: boolean;
+  onDeleteAlbum?: (fromDisk: boolean) => void;
 }) {
   const totalDuration = album.tracks.reduce((sum, t) => sum + t.duration, 0);
 
@@ -239,6 +317,30 @@ function AlbumSection({
             {album.tracks.length} tracks
             {totalDuration > 0 && ` \u00B7 ${formatDuration(totalDuration)}`}
           </p>
+          <div className="album-section-actions">
+            {showTransfer && onTransferAlbum && (
+              <button
+                type="button"
+                className="btn btn-small btn-transfer-album"
+                onClick={onTransferAlbum}
+                disabled={isTransferring}
+                title="このアルバムをWalkmanに転送"
+              >
+                &#x27A1; Walkmanに転送
+              </button>
+            )}
+            {onDeleteAlbum && (
+              <button
+                type="button"
+                className="btn btn-small btn-ghost album-delete-btn"
+                onClick={() => onDeleteAlbum(false)}
+                disabled={isDeleting}
+                title="このアルバムをライブラリから削除"
+              >
+                &#x1F5D1; 削除
+              </button>
+            )}
+          </div>
         </div>
       </div>
       <div className="album-section-tracks">

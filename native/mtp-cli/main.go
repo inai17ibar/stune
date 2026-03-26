@@ -50,6 +50,8 @@ func main() {
 			handleUpload(req)
 		case "download":
 			handleDownload(req)
+		case "delete":
+			handleDelete(req)
 		default:
 			out(map[string]string{"error": "unknown cmd: " + cmd})
 		}
@@ -163,6 +165,56 @@ func handleUpload(req map[string]json.RawMessage) {
 		return
 	}
 	out(map[string]bool{"ok": true})
+}
+
+func handleDelete(req map[string]json.RawMessage) {
+	var storageId string
+	_ = json.Unmarshal(req["storageId"], &storageId)
+
+	var paths []string
+	_ = json.Unmarshal(req["paths"], &paths)
+	if len(paths) == 0 {
+		out(map[string]string{"error": "missing paths"})
+		return
+	}
+	sid, _ := strconv.ParseUint(storageId, 10, 32)
+	storageIdU32 := uint32(sid)
+
+	dev, err := mtpx.Initialize(mtpx.Init{})
+	if err != nil {
+		out(map[string]string{"error": err.Error()})
+		return
+	}
+	defer mtpx.Dispose(dev)
+
+	// Delete files one by one with proper error reporting.
+	// go-mtpx's DeleteFile silently returns nil on errors, so we resolve
+	// each path to an objectId first and call DeleteObject directly.
+	deletedCount := 0
+	var errors []string
+	for _, p := range paths {
+		fc, err := mtpx.FileExists(dev, storageIdU32, []mtpx.FileProp{{ObjectId: 0, FullPath: p}})
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: lookup failed: %v", p, err))
+			continue
+		}
+		if len(fc) == 0 || !fc[0].Exists || fc[0].FileInfo == nil {
+			errors = append(errors, fmt.Sprintf("%s: not found on device", p))
+			continue
+		}
+		objectId := fc[0].FileInfo.ObjectId
+		if err := dev.DeleteObject(objectId); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: delete failed (objectId=%d): %v", p, objectId, err))
+			continue
+		}
+		deletedCount++
+	}
+
+	if len(errors) > 0 && deletedCount == 0 {
+		out(map[string]interface{}{"error": strings.Join(errors, "; "), "deletedCount": 0})
+		return
+	}
+	out(map[string]interface{}{"ok": true, "deletedCount": deletedCount, "errors": errors})
 }
 
 func handleDownload(req map[string]json.RawMessage) {
