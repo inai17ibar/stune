@@ -28,7 +28,6 @@ import {
   dbToLibrary,
   removeFolderFromDb,
   updateTrackCustomMeta,
-  scanFolderIntoDb,
   type LibraryDatabase,
   type TrackRecord,
 } from '../libraryDb';
@@ -320,6 +319,185 @@ describe('updateTrackCustomMeta', () => {
 
     expect(db.tracks['/song.mp3'].title).toBe('My Song');
     expect(db.tracks['/song.mp3'].playCount).toBe(10);
+  });
+});
+
+// ===== Track deletion from DB =====
+
+describe('track deletion from DB', () => {
+  it('deletes a single track by filePath', () => {
+    const db = makeDb();
+    db.tracks['/music/a.mp3'] = makeTrack({ filePath: '/music/a.mp3', title: 'A' });
+    db.tracks['/music/b.mp3'] = makeTrack({ filePath: '/music/b.mp3', title: 'B' });
+
+    delete db.tracks['/music/a.mp3'];
+
+    expect(Object.keys(db.tracks)).toHaveLength(1);
+    expect(db.tracks['/music/b.mp3'].title).toBe('B');
+  });
+
+  it('deletes multiple tracks', () => {
+    const db = makeDb();
+    db.tracks['/music/a.mp3'] = makeTrack({ filePath: '/music/a.mp3' });
+    db.tracks['/music/b.mp3'] = makeTrack({ filePath: '/music/b.mp3' });
+    db.tracks['/music/c.mp3'] = makeTrack({ filePath: '/music/c.mp3' });
+
+    const toDelete = ['/music/a.mp3', '/music/c.mp3'];
+    for (const fp of toDelete) {
+      delete db.tracks[fp];
+    }
+
+    expect(Object.keys(db.tracks)).toEqual(['/music/b.mp3']);
+  });
+
+  it('deleting all tracks from an album removes the album from dbToLibrary', () => {
+    const db = makeDb();
+    db.tracks['/music/a1.mp3'] = makeTrack({
+      filePath: '/music/a1.mp3', album: 'Album1', albumArtist: 'X',
+    });
+    db.tracks['/music/a2.mp3'] = makeTrack({
+      filePath: '/music/a2.mp3', album: 'Album1', albumArtist: 'X',
+    });
+    db.tracks['/music/b1.mp3'] = makeTrack({
+      filePath: '/music/b1.mp3', album: 'Album2', albumArtist: 'Y',
+    });
+
+    // Delete all tracks from Album1
+    delete db.tracks['/music/a1.mp3'];
+    delete db.tracks['/music/a2.mp3'];
+
+    const lib = dbToLibrary(db);
+    expect(lib.albums).toHaveLength(1);
+    expect(lib.albums[0].name).toBe('Album2');
+    expect(lib.tracks).toHaveLength(1);
+  });
+
+  it('deleting all tracks from an artist removes the artist from dbToLibrary', () => {
+    const db = makeDb();
+    db.tracks['/music/x1.mp3'] = makeTrack({
+      filePath: '/music/x1.mp3', album: 'A1', albumArtist: 'ArtistX', artist: 'ArtistX',
+    });
+    db.tracks['/music/x2.mp3'] = makeTrack({
+      filePath: '/music/x2.mp3', album: 'A2', albumArtist: 'ArtistX', artist: 'ArtistX',
+    });
+    db.tracks['/music/y1.mp3'] = makeTrack({
+      filePath: '/music/y1.mp3', album: 'B1', albumArtist: 'ArtistY', artist: 'ArtistY',
+    });
+
+    // Delete all ArtistX tracks
+    delete db.tracks['/music/x1.mp3'];
+    delete db.tracks['/music/x2.mp3'];
+
+    const lib = dbToLibrary(db);
+    expect(lib.albums).toHaveLength(1);
+    expect(lib.albums[0].artist).toBe('ArtistY');
+  });
+
+  it('deletion is persisted through save/load', async () => {
+    const db = makeDb();
+    db.tracks['/music/a.mp3'] = makeTrack({ filePath: '/music/a.mp3' });
+    db.tracks['/music/b.mp3'] = makeTrack({ filePath: '/music/b.mp3' });
+    await saveLibraryDb(db);
+
+    // Delete and save
+    delete db.tracks['/music/a.mp3'];
+    await saveLibraryDb(db);
+
+    const loaded = await loadLibraryDb();
+    expect(Object.keys(loaded.tracks)).toEqual(['/music/b.mp3']);
+  });
+
+  it('deleting nonexistent track is a no-op', () => {
+    const db = makeDb();
+    db.tracks['/music/a.mp3'] = makeTrack({ filePath: '/music/a.mp3' });
+
+    delete db.tracks['/music/nonexistent.mp3'];
+
+    expect(Object.keys(db.tracks)).toHaveLength(1);
+  });
+});
+
+// ===== dbToLibrary artist grouping =====
+
+describe('dbToLibrary artist grouping', () => {
+  it('groups albums by artist correctly', () => {
+    const db = makeDb();
+    db.tracks['/a1.mp3'] = makeTrack({
+      filePath: '/a1.mp3', album: 'Album1', albumArtist: 'ArtistA', artist: 'ArtistA',
+    });
+    db.tracks['/a2.mp3'] = makeTrack({
+      filePath: '/a2.mp3', album: 'Album2', albumArtist: 'ArtistA', artist: 'ArtistA',
+    });
+    db.tracks['/b1.mp3'] = makeTrack({
+      filePath: '/b1.mp3', album: 'Album3', albumArtist: 'ArtistB', artist: 'ArtistB',
+    });
+
+    const lib = dbToLibrary(db);
+    expect(lib.albums).toHaveLength(3);
+
+    const artistAAlbums = lib.albums.filter((a) => a.artist === 'ArtistA');
+    const artistBAlbums = lib.albums.filter((a) => a.artist === 'ArtistB');
+    expect(artistAAlbums).toHaveLength(2);
+    expect(artistBAlbums).toHaveLength(1);
+  });
+
+  it('an artist with multiple albums has correct track counts', () => {
+    const db = makeDb();
+    db.tracks['/a1.mp3'] = makeTrack({
+      filePath: '/a1.mp3', album: 'Album1', albumArtist: 'X',
+    });
+    db.tracks['/a2.mp3'] = makeTrack({
+      filePath: '/a2.mp3', album: 'Album1', albumArtist: 'X',
+    });
+    db.tracks['/a3.mp3'] = makeTrack({
+      filePath: '/a3.mp3', album: 'Album2', albumArtist: 'X',
+    });
+
+    const lib = dbToLibrary(db);
+    const album1 = lib.albums.find((a) => a.name === 'Album1');
+    const album2 = lib.albums.find((a) => a.name === 'Album2');
+    expect(album1!.tracks).toHaveLength(2);
+    expect(album2!.tracks).toHaveLength(1);
+  });
+
+  it('transfer-eligible tracks: all tracks from an album', () => {
+    const db = makeDb();
+    db.tracks['/a.mp3'] = makeTrack({
+      filePath: '/a.mp3', album: 'A', albumArtist: 'X', trackNumber: 1,
+    });
+    db.tracks['/b.mp3'] = makeTrack({
+      filePath: '/b.mp3', album: 'A', albumArtist: 'X', trackNumber: 2,
+    });
+    db.tracks['/c.mp3'] = makeTrack({
+      filePath: '/c.mp3', album: 'A', albumArtist: 'X', trackNumber: 3,
+    });
+
+    const lib = dbToLibrary(db);
+    const album = lib.albums[0];
+    const transferPaths = album.tracks.map((t) => t.filePath);
+    expect(transferPaths).toHaveLength(3);
+    // Verify ordering (by track number)
+    expect(transferPaths).toEqual(['/a.mp3', '/b.mp3', '/c.mp3']);
+  });
+
+  it('transfer-eligible tracks: all tracks from an artist', () => {
+    const db = makeDb();
+    db.tracks['/x1.mp3'] = makeTrack({
+      filePath: '/x1.mp3', album: 'A1', albumArtist: 'X',
+    });
+    db.tracks['/x2.mp3'] = makeTrack({
+      filePath: '/x2.mp3', album: 'A2', albumArtist: 'X',
+    });
+    db.tracks['/y1.mp3'] = makeTrack({
+      filePath: '/y1.mp3', album: 'B1', albumArtist: 'Y',
+    });
+
+    const lib = dbToLibrary(db);
+    const artistXAlbums = lib.albums.filter((a) => a.artist === 'X');
+    const allXPaths = artistXAlbums.flatMap((a) => a.tracks.map((t) => t.filePath));
+    expect(allXPaths).toHaveLength(2);
+    expect(allXPaths).toContain('/x1.mp3');
+    expect(allXPaths).toContain('/x2.mp3');
   });
 });
 
