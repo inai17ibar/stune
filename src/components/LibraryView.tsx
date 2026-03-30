@@ -204,6 +204,14 @@ export default function LibraryView() {
               </button>
               <button
                 type="button"
+                className="btn btn-small btn-danger"
+                onClick={() => handleDeleteSelected(true)}
+                disabled={isDeleting}
+              >
+                ディスクから削除
+              </button>
+              <button
+                type="button"
                 className="btn btn-ghost btn-small"
                 onClick={clearSelection}
               >
@@ -330,15 +338,26 @@ function AlbumSection({
               </button>
             )}
             {onDeleteAlbum && (
-              <button
-                type="button"
-                className="btn btn-small btn-ghost album-delete-btn"
-                onClick={() => onDeleteAlbum(false)}
-                disabled={isDeleting}
-                title="このアルバムをライブラリから削除"
-              >
-                &#x1F5D1; 削除
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn btn-small btn-ghost album-delete-btn"
+                  onClick={() => onDeleteAlbum(false)}
+                  disabled={isDeleting}
+                  title="このアルバムをライブラリから削除（ファイルは残る）"
+                >
+                  &#x1F5D1; ライブラリから削除
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-small btn-ghost album-delete-btn btn-danger"
+                  onClick={() => onDeleteAlbum(true)}
+                  disabled={isDeleting}
+                  title="このアルバムをライブラリとディスクから完全に削除"
+                >
+                  &#x1F5D1; ディスクから削除
+                </button>
+              </>
             )}
           </div>
         </div>

@@ -36,6 +36,7 @@ export interface Album {
 export interface Library {
   rootPath: string;
   libraryPaths?: string[];
+  masterFolder?: string;
   tracks: TrackMetadata[];
   albums: Album[];
   totalSize: number;

@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('stune', {
     }>
   ) => ipcRenderer.invoke('update-track-meta', { filePath, updates }),
   getLibraryDbPath: () => ipcRenderer.invoke('get-library-db-path'),
+  setMasterFolder: () => ipcRenderer.invoke('set-master-folder'),
 
   // Device
   getDevices: () => ipcRenderer.invoke('get-devices'),

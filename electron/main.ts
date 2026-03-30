@@ -481,6 +481,28 @@ ipcMain.handle('get-library-db-path', async () => {
   return path.join(userDataPath, 'sTuneLibrary.json');
 });
 
+// Set master folder (iTunes-style managed library folder)
+ipcMain.handle('set-master-folder', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'マスターフォルダを選択',
+    message: 'インポートした曲のコピー先フォルダを選択してください',
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+  libraryDb.masterFolder = result.filePaths[0];
+  // Ensure it's also in libraryPaths so it gets scanned
+  if (!libraryDb.libraryPaths.includes(libraryDb.masterFolder)) {
+    libraryDb.libraryPaths.push(libraryDb.masterFolder);
+  }
+  await saveLibraryDb(libraryDb);
+  return { masterFolder: libraryDb.masterFolder, library: dbToLibrary(libraryDb) };
+});
+
 // Browse MTP device directory (filtered)
 ipcMain.handle('mtp-browse', async (_event, args: { storageId: string; path: string }) => {
   return await mtpBrowse(args.storageId, args.path);
@@ -531,7 +553,7 @@ ipcMain.handle('import-to-library', async () => {
     libraryDb = await loadLibraryDb();
   }
 
-  const managedDir = path.join(app.getPath('music'), 'sTunes');
+  const managedDir = libraryDb.masterFolder;
   const total = result.filePaths.length;
   let imported = 0;
   const errors: string[] = [];
@@ -600,7 +622,7 @@ ipcMain.handle('import-files-by-path', async (_event, filePaths: string[]) => {
   }
 
   const AUDIO_EXTS = new Set(['.mp3', '.flac', '.wav', '.aac', '.m4a', '.aiff', '.aif', '.ogg', '.wma', '.dsf', '.dff', '.opus']);
-  const managedDir = path.join(app.getPath('music'), 'sTunes');
+  const managedDir = libraryDb.masterFolder;
   let imported = 0;
   const errors: string[] = [];
 

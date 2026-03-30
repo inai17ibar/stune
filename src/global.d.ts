@@ -18,6 +18,7 @@ interface STuneAPI {
     }>
   ) => Promise<any>;
   getLibraryDbPath: () => Promise<string>;
+  setMasterFolder: () => Promise<{ masterFolder: string; library: any } | null>;
 
   // Device
   getDevices: () => Promise<any[]>;

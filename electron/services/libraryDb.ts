@@ -37,6 +37,8 @@ export interface TrackRecord {
 export interface LibraryDatabase {
   version: number;
   libraryPaths: string[];
+  /** マスターフォルダ: インポートした曲のコピー先。iTunes の "iTunes Media" に相当 */
+  masterFolder: string;
   lastScanned: string;
   tracks: Record<string, TrackRecord>; // keyed by filePath
 }
@@ -55,10 +57,15 @@ function getCoversDir(): string {
   return path.join(getDbDir(), 'covers');
 }
 
+function getDefaultMasterFolder(): string {
+  return path.join(app.getPath('music'), 'sTunes');
+}
+
 function createEmptyDb(): LibraryDatabase {
   return {
     version: 1,
     libraryPaths: [],
+    masterFolder: getDefaultMasterFolder(),
     lastScanned: new Date().toISOString(),
     tracks: {},
   };
@@ -157,7 +164,12 @@ export async function loadLibraryDb(): Promise<LibraryDatabase> {
   const dbPath = getDbPath();
   try {
     const data = await fs.promises.readFile(dbPath, 'utf-8');
-    return JSON.parse(data) as LibraryDatabase;
+    const db = JSON.parse(data) as LibraryDatabase;
+    // Migration: add masterFolder for existing DBs
+    if (!db.masterFolder) {
+      db.masterFolder = getDefaultMasterFolder();
+    }
+    return db;
   } catch {
     return createEmptyDb();
   }
@@ -358,6 +370,7 @@ export function dbToLibrary(db: LibraryDatabase) {
   return {
     rootPath: db.libraryPaths.join('; '),
     libraryPaths: db.libraryPaths,
+    masterFolder: db.masterFolder,
     tracks,
     albums,
     totalSize,

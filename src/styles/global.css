@@ -292,6 +292,46 @@ body {
   color: var(--accent);
 }
 
+.master-folder-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.master-folder-label {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.master-folder-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.master-folder-change {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.master-folder-change:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
 .nav-icon {
   font-size: 14px;
   width: 18px;

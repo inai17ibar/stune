@@ -8,6 +8,8 @@
     "build": "tsc && vite build && tsc -p tsconfig.electron.json",
     "electron:dev": "unset ELECTRON_RUN_AS_NODE && tsc -p tsconfig.electron.json && concurrently \"vite\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on http://localhost:5173 && env -u ELECTRON_RUN_AS_NODE electron .\"",
     "electron:build": "env -u ELECTRON_RUN_AS_NODE npm run build && env -u ELECTRON_RUN_AS_NODE electron-builder",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "setup": "bash scripts/setup.sh"
   },
   "keywords": [
@@ -32,6 +34,7 @@
     "electron-builder": "^26.8.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
+    "vitest": "^4.1.2",
     "wait-on": "^9.0.4"
   },
   "build": {
@@ -48,7 +51,9 @@
       {
         "from": "resources/bin",
         "to": "bin",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   }

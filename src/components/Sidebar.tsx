@@ -236,6 +236,30 @@ export default function Sidebar() {
             </p>
           </div>
 
+          {/* Master folder display */}
+          {library?.masterFolder && (
+            <div className="master-folder-info">
+              <span className="master-folder-label">マスターフォルダ:</span>
+              <span className="master-folder-path" title={library.masterFolder}>
+                {library.masterFolder.split('/').slice(-2).join('/')}
+              </span>
+              <button
+                type="button"
+                className="master-folder-change"
+                onClick={async () => {
+                  if (!window.stune) return;
+                  const result = await window.stune.setMasterFolder();
+                  if (result) {
+                    setLibrary(result.library);
+                  }
+                }}
+                title="マスターフォルダを変更"
+              >
+                変更
+              </button>
+            </div>
+          )}
+
           {library && library.tracks.length > 0 && (
             <button className="nav-item subtle" onClick={handleRescan}>
               <span className="nav-icon">&#8635;</span>
