@@ -1,11 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 import { getMtpDevices, isMtpCliAvailable } from './mtp';
 
 // Known Walkman identifiers to detect
 const WALKMAN_INDICATORS = ['WALKMAN', 'NW-A', 'NW-ZX', 'NW-WM', 'SONY'];
 // SD card volume names commonly used with Walkman
 const SD_CARD_INDICATORS = ['SD_CARD', 'SDCARD', 'SD CARD', 'MICROSD', 'WALKMAN_SD', 'NW_SD'];
+// Network filesystem types to exclude
+const NETWORK_FS_TYPES = ['smbfs', 'nfs', 'afpfs', 'cifs', 'webdavfs', 'acfs'];
 
 export interface DetectedDevice {
   name: string;
@@ -41,7 +44,22 @@ async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
         upperName.includes(indicator)
       );
 
-      if (nameMatch || hasMusicFolder || isSdCard) {
+      // Name match or SD card pattern → always include
+      // MUSIC folder only → include only if NOT a network volume
+      const isWalkman = nameMatch || isSdCard
+        || (hasMusicFolder && !isNetworkVolume(mountPath));
+
+      if (isWalkman) {
+        // Require name match or SD card for non-MUSIC-folder-only detections
+        // Skip generic volumes that just happen to have a Music folder
+        if (!nameMatch && !isSdCard && hasMusicFolder) {
+          // Extra check: only include if it looks like a portable device
+          // (has MUSIC folder AND is not the boot volume or a large disk)
+          const isBootVolume = mountPath === '/Volumes/Macintosh HD'
+            || mountPath === '/Volumes/Macintosh HD - Data';
+          if (isBootVolume) continue;
+        }
+
         const displayName = isSdCard && !nameMatch
           ? `${entry.name} (SD Card)`
           : entry.name;
@@ -71,6 +89,22 @@ async function checkMusicFolder(mountPath: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+/**
+ * Check if a mount path is a network volume (SMB, NFS, AFP, etc.).
+ * Uses `stat -f %T` to get the filesystem type on macOS.
+ */
+function isNetworkVolume(mountPath: string): boolean {
+  try {
+    const fsType = execSync(`stat -f '%T' ${JSON.stringify(mountPath)}`, {
+      encoding: 'utf-8',
+      timeout: 2000,
+    }).trim().toLowerCase();
+    return NETWORK_FS_TYPES.some((nfs) => fsType.includes(nfs));
+  } catch {
+    return false;
+  }
 }
 
 /** USB マウント + MTP デバイスをまとめて返す */

@@ -187,6 +187,40 @@ body {
   justify-content: center;
 }
 
+.nav-item-wrapper {
+  display: flex;
+  align-items: stretch;
+}
+
+.nav-item-wrapper .nav-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-eject-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.nav-item-wrapper:hover .nav-eject-btn {
+  opacity: 0.6;
+}
+
+.nav-eject-btn:hover {
+  opacity: 1 !important;
+  color: var(--text-primary);
+}
+
 .drop-zone {
   border: 1px dashed transparent;
   border-radius: 8px;

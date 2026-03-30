@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('stune', {
   getDiskUsage: (mountPath: string) =>
     ipcRenderer.invoke('get-disk-usage', mountPath),
 
+  // Eject
+  ejectDevice: (mountPath: string) =>
+    ipcRenderer.invoke('eject-device', mountPath),
+
   // MTP Browse & Playback
   mtpBrowse: (storageId: string, path: string) =>
     ipcRenderer.invoke('mtp-browse', { storageId, path }),

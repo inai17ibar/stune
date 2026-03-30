@@ -296,19 +296,42 @@ export default function Sidebar() {
             </div>
           ) : (
             devices.map((device) => (
-              <button
-                key={device.mountPath}
-                className={`nav-item ${
-                  viewMode === 'device' &&
-                  activeDevice?.mountPath === device.mountPath
-                    ? 'active'
-                    : ''
-                }`}
-                onClick={() => handleDeviceClick(device)}
-              >
-                <span className="nav-icon">&#9654;</span>
-                {device.name}
-              </button>
+              <div key={device.mountPath} className="nav-item-wrapper">
+                <button
+                  type="button"
+                  className={`nav-item ${
+                    viewMode === 'device' &&
+                    activeDevice?.mountPath === device.mountPath
+                      ? 'active'
+                      : ''
+                  }`}
+                  onClick={() => handleDeviceClick(device)}
+                >
+                  <span className="nav-icon">&#9654;</span>
+                  {device.name}
+                </button>
+                <button
+                  type="button"
+                  className="nav-eject-btn"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (!window.stune) return;
+                    const result = await window.stune.ejectDevice(device.mountPath);
+                    if (result.success) {
+                      setConnectionToast(result.message);
+                      if (activeDevice?.mountPath === device.mountPath) {
+                        setActiveDevice(null);
+                        setViewMode('library');
+                      }
+                    } else {
+                      showError(result.message);
+                    }
+                  }}
+                  title="取り出し"
+                >
+                  &#x23CF;
+                </button>
+              </div>
             ))
           )}
         </div>

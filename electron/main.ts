@@ -1,6 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, session, protocol, net } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFile as execFileCb } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFileCb);
 import { scanLibrary, scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices } from './services/device';
 import { copyTracks } from './services/transfer';
@@ -494,6 +497,21 @@ ipcMain.handle('mtp-download-file', async (_event, args: { storageId: string; re
 // Get MTP device info with all storages
 ipcMain.handle('mtp-get-devices', async () => {
   return await getMtpDevices();
+});
+
+// Eject a device (USB: diskutil eject, MTP: no-op but clear from UI)
+ipcMain.handle('eject-device', async (_event, mountPath: string) => {
+  if (mountPath.startsWith('mtp://')) {
+    // MTP devices can't be ejected from software — just acknowledge
+    return { success: true, message: 'MTP device removed from list. You can safely disconnect the USB cable.' };
+  }
+  // USB-mounted volume: use diskutil eject
+  try {
+    await execFileAsync('diskutil', ['eject', mountPath]);
+    return { success: true, message: 'デバイスを取り出しました。USBケーブルを安全に抜けます。' };
+  } catch (err: any) {
+    return { success: false, message: `取り出しに失敗: ${err.message}` };
+  }
 });
 
 // Import files into library: select files, read metadata, copy to ~/Music/sTunes/Artist/Album/

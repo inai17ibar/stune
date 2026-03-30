@@ -25,6 +25,9 @@ interface STuneAPI {
   scanDevice: (mountPath: string) => Promise<any>;
   getDiskUsage: (mountPath: string) => Promise<any>;
 
+  // Eject
+  ejectDevice: (mountPath: string) => Promise<{ success: boolean; message: string }>;
+
   // MTP Browse & Playback
   mtpBrowse: (storageId: string, path: string) => Promise<any[]>;
   mtpDownloadFile: (storageId: string, remotePath: string) => Promise<string | null>;
