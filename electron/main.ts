@@ -7,7 +7,7 @@ const execFileAsync = promisify(execFileCb);
 import { scanLibrary, scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices } from './services/device';
 import { copyTracks } from './services/transfer';
-import { sanitizePathSegment, buildTransferFileName } from './services/syncDiff';
+import { sanitizePathSegment, buildTransferFileName, computeSyncPlan } from './services/syncDiff';
 import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
 import { readTrackMetadata } from './services/metadata';
 import {
@@ -134,6 +134,38 @@ ipcMain.handle('is-mtp-cli-available', () => isMtpCliAvailable());
 ipcMain.handle('scan-device', async (_event, mountPath: string) => {
   if (isMtpPath(mountPath)) return await scanMtpDevice(mountPath);
   return await scanDevice(mountPath);
+});
+
+// Compute a sync plan: diff the library against a device's current contents
+ipcMain.handle('compute-sync-plan', async (_event, deviceMountPath: string) => {
+  if (!libraryDb) {
+    libraryDb = await loadLibraryDb();
+  }
+  const libraryTracks = Object.values(libraryDb.tracks);
+  const device = isMtpPath(deviceMountPath)
+    ? await scanMtpDevice(deviceMountPath)
+    : await scanDevice(deviceMountPath);
+
+  const plan = computeSyncPlan(libraryTracks, device.tracks, {
+    musicRoot: device.musicPath,
+  });
+
+  // Strip heavy fields (coverArt) before sending over IPC
+  const slim = (t: any) => ({
+    filePath: t.filePath,
+    fileName: t.fileName,
+    title: t.title || '',
+    artist: t.artist || '',
+    album: t.album || '',
+    trackNumber: t.trackNumber,
+    fileSize: t.fileSize || 0,
+  });
+
+  return {
+    toTransfer: plan.toTransfer.map(slim),
+    toDelete: plan.toDelete.map(slim),
+    matchedCount: plan.matched.length,
+  };
 });
 
 // Copy tracks from source to destination（USB または MTP へ）

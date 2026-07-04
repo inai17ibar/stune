@@ -72,6 +72,22 @@ export interface TransferJob {
   error?: string;
 }
 
+export interface SyncPlanTrack {
+  filePath: string;
+  fileName: string;
+  title: string;
+  artist: string;
+  album: string;
+  trackNumber?: number;
+  fileSize: number;
+}
+
+export interface SyncPlanResult {
+  toTransfer: SyncPlanTrack[];
+  toDelete: SyncPlanTrack[];
+  matchedCount: number;
+}
+
 export type ViewMode = 'library' | 'device' | 'albums' | 'artists';
 export type SortKey = 'title' | 'artist' | 'album' | 'duration' | 'year';
 export type SortOrder = 'asc' | 'desc';

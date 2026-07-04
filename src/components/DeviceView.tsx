@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../stores/useStore';
 import DiskUsageBar from './DiskUsageBar';
+import SyncDialog from './SyncDialog';
 import type { Album } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,7 @@ export default function DeviceView() {
   // ---- Shared state -------------------------------------------------------
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   // ---- USB state ----------------------------------------------------------
   const [expandedArtists, setExpandedArtists] = useState<Set<string>>(new Set());
@@ -426,7 +428,21 @@ export default function DeviceView() {
           <span className="view-header-meta">
             {allUsbTracks.length} tracks &middot; {formatSize(allUsbTracks.reduce((s, t) => s + t.fileSize, 0))}
           </span>
+          <button
+            className="btn btn-small btn-primary sync-open-btn"
+            onClick={() => setSyncOpen(true)}
+          >
+            🔄 同期
+          </button>
         </div>
+
+        {syncOpen && (
+          <SyncDialog
+            mountPath={activeDevice.mountPath}
+            deviceName={activeDevice.name}
+            onClose={() => setSyncOpen(false)}
+          />
+        )}
 
         <DiskUsageBar device={activeDevice} />
 
@@ -673,7 +689,21 @@ export default function DeviceView() {
       <div className="view-header">
         <h2>{activeDevice.name}</h2>
         <span className="view-header-badge">MTP</span>
+        <button
+          className="btn btn-small btn-primary sync-open-btn"
+          onClick={() => setSyncOpen(true)}
+        >
+          🔄 同期
+        </button>
       </div>
+
+      {syncOpen && (
+        <SyncDialog
+          mountPath={activeDevice.mountPath}
+          deviceName={activeDevice.name}
+          onClose={() => setSyncOpen(false)}
+        />
+      )}
 
       <DiskUsageBar device={activeDevice} />
 

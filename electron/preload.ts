@@ -50,6 +50,10 @@ contextBridge.exposeInMainWorld('stune', {
   importFilesByPath: (filePaths: string[]) =>
     ipcRenderer.invoke('import-files-by-path', filePaths),
 
+  // Sync
+  computeSyncPlan: (deviceMountPath: string) =>
+    ipcRenderer.invoke('compute-sync-plan', deviceMountPath),
+
   // Transfer
   copyTracks: (sourcePaths: string[], destinationDir: string) =>
     ipcRenderer.invoke('copy-tracks', { sourcePaths, destinationDir }),

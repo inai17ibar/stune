@@ -38,6 +38,13 @@ interface STuneAPI {
   importToLibrary: () => Promise<{ library: any; imported: number; errors: string[] } | null>;
   importFilesByPath: (filePaths: string[]) => Promise<{ library: any; imported: number; errors: string[] }>;
 
+  // Sync
+  computeSyncPlan: (deviceMountPath: string) => Promise<{
+    toTransfer: import('./types').SyncPlanTrack[];
+    toDelete: import('./types').SyncPlanTrack[];
+    matchedCount: number;
+  }>;
+
   // Transfer
   copyTracks: (
     sourcePaths: string[],
