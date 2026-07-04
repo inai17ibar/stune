@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFileCb);
 import { scanLibrary, scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices } from './services/device';
 import { copyTracks } from './services/transfer';
+import { sanitizePathSegment, buildTransferFileName } from './services/syncDiff';
 import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
 import { readTrackMetadata } from './services/metadata';
 import {
@@ -206,21 +207,17 @@ ipcMain.handle(
 
     for (const filePath of args.sourcePaths) {
       const track = libraryDb.tracks[filePath];
-      const artist = (track?.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
-      const album = (track?.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
+      const artist = sanitizePathSegment(track?.artist || 'Unknown Artist');
+      const album = sanitizePathSegment(track?.album || 'Unknown Album');
       const origFileName = path.basename(filePath);
-
-      // Generate track-number-prefixed filename for correct playback order
-      const disc = track?.discNumber || 1;
-      const trackNum = track?.trackNumber || 0;
-      const prefix = trackNum > 0
-        ? (disc > 1 ? `${disc}-${String(trackNum).padStart(2, '0')}` : String(trackNum).padStart(2, '0'))
-        : '';
-      // Only prefix if filename doesn't already start with the track number
-      const alreadyPrefixed = prefix && origFileName.match(/^\d+[-.\s]/);
-      const destFileName = (!alreadyPrefixed && prefix)
-        ? `${prefix} ${origFileName}`
-        : origFileName;
+      // Track-number-prefixed filename for correct playback order.
+      // Shared with syncDiff so diff detection stays in lockstep with transfer.
+      const destFileName = buildTransferFileName({
+        filePath,
+        fileName: origFileName,
+        trackNumber: track?.trackNumber,
+        discNumber: track?.discNumber,
+      });
 
       if (mainWindow) {
         mainWindow.webContents.send('transfer-progress', {
