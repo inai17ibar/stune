@@ -27,7 +27,12 @@ interface STuneAPI {
   getDiskUsage: (mountPath: string) => Promise<any>;
 
   // Eject
-  ejectDevice: (mountPath: string) => Promise<{ success: boolean; message: string }>;
+  ejectDevice: (mountPath: string) => Promise<{
+    success: boolean;
+    message: string;
+    /** MTP のようにユーザーが物理的にケーブルを抜く必要がある場合 true */
+    requiresManualDisconnect?: boolean;
+  }>;
 
   // MTP Browse & Playback
   mtpBrowse: (storageId: string, path: string) => Promise<any[]>;

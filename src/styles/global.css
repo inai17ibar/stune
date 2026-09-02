@@ -212,13 +212,20 @@ body {
   flex-shrink: 0;
 }
 
-.nav-item-wrapper:hover .nav-eject-btn {
+.nav-item-wrapper:hover .nav-eject-btn,
+.nav-eject-btn:focus-visible {
   opacity: 0.6;
 }
 
-.nav-eject-btn:hover {
+.nav-eject-btn:hover:not(:disabled) {
   opacity: 1 !important;
   color: var(--text-primary);
+}
+
+/* 取り出し処理中 */
+.nav-eject-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .drop-zone {
