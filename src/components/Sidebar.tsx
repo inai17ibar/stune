@@ -3,6 +3,8 @@ import { useStore } from '../stores/useStore';
 
 export default function Sidebar() {
   const [mtpCliAvailable, setMtpCliAvailable] = useState<boolean | null>(null);
+  /** 取り出し処理中のデバイス（二重クリック防止） */
+  const [ejectingPath, setEjectingPath] = useState<string | null>(null);
   const {
     viewMode,
     setViewMode,
@@ -10,6 +12,7 @@ export default function Sidebar() {
     devices,
     activeDevice,
     setActiveDevice,
+    removeDevice,
     isScanning,
     setIsScanning,
     setLibrary,
@@ -17,11 +20,21 @@ export default function Sidebar() {
     setErrorMessage,
     connectionToast,
     setConnectionToast,
+    nowPlaying,
+    setNowPlaying,
   } = useStore();
 
   const showError = (msg: string) => {
     setErrorMessage(msg);
     setTimeout(() => setErrorMessage(null), 5000);
+  };
+
+  const showToast = (msg: string, durationMs = 5000) => {
+    setConnectionToast(msg);
+    setTimeout(() => {
+      // 別のトーストに置き換わっていた場合は消さない
+      if (useStore.getState().connectionToast === msg) setConnectionToast(null);
+    }, durationMs);
   };
 
   const handleAddFolder = async () => {
@@ -100,6 +113,29 @@ export default function Sidebar() {
       showError(`デバイスのスキャンに失敗しました: ${err?.message || err}`);
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  const handleEject = async (mountPath: string) => {
+    if (!window.stune || ejectingPath) return;
+    setEjectingPath(mountPath);
+    try {
+      // デバイス上のファイルを再生していると「使用中」で取り出せないので先に停止する
+      if (nowPlaying?.filePath.startsWith(`${mountPath}/`)) setNowPlaying(null);
+
+      const result = await window.stune.ejectDevice(mountPath);
+      if (!result.success) {
+        showError(result.message);
+        return;
+      }
+      // main 側のデバイス再検出通知を待たずに一覧から消す
+      removeDevice(mountPath);
+      showToast(result.message, result.requiresManualDisconnect ? 10000 : 5000);
+    } catch (err: any) {
+      console.error('Failed to eject device:', err);
+      showError(`取り出しに失敗しました: ${err?.message || err}`);
+    } finally {
+      setEjectingPath(null);
     }
   };
 
@@ -337,23 +373,15 @@ export default function Sidebar() {
                 <button
                   type="button"
                   className="nav-eject-btn"
-                  onClick={async (e) => {
+                  onClick={(e) => {
                     e.stopPropagation();
-                    if (!window.stune) return;
-                    const result = await window.stune.ejectDevice(device.mountPath);
-                    if (result.success) {
-                      setConnectionToast(result.message);
-                      if (activeDevice?.mountPath === device.mountPath) {
-                        setActiveDevice(null);
-                        setViewMode('library');
-                      }
-                    } else {
-                      showError(result.message);
-                    }
+                    void handleEject(device.mountPath);
                   }}
+                  disabled={ejectingPath === device.mountPath}
                   title="取り出し"
+                  aria-label={`${device.name} を取り出す`}
                 >
-                  &#x23CF;
+                  {ejectingPath === device.mountPath ? '…' : '⏏'}
                 </button>
               </div>
             ))

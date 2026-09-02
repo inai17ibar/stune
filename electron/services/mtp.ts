@@ -3,7 +3,7 @@
  * バイナリが無い場合は MTP デバイスは検出されません。
  */
 
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import { app } from 'electron';
 import * as fs from 'fs';
@@ -36,6 +36,13 @@ export interface MtpFileInfo {
 }
 
 let mtpCliPath: string | null = null;
+
+/**
+ * 実行中の mtp-cli プロセス。
+ * mtp-cli はコマンドごとにプロセスを起動して MTP セッションを開閉するため、
+ * 「セッションの切断」= 実行中プロセスの終了（= デバイス側セッションの解放）となる。
+ */
+const activeProcesses = new Set<ChildProcess>();
 
 /**
  * 同梱の mtp-cli または OpenMTP アプリ内の mtp-cli のパスを返す。
@@ -113,12 +120,18 @@ function runMtpCommand<T = unknown>(request: object): Promise<T | null> {
       env,
     });
 
+    activeProcesses.add(child);
+    const done = (value: T | null) => {
+      activeProcesses.delete(child);
+      resolve(value);
+    };
+
     let stdout = '';
     let stderr = '';
     const timeout = setTimeout(() => {
       console.error('[mtp-cli] timeout after 120s, request:', JSON.stringify(request).slice(0, 200));
       child.kill('SIGKILL');
-      resolve(null);
+      done(null);
     }, 120000);
 
     child.stdout?.on('data', (chunk) => {
@@ -131,31 +144,31 @@ function runMtpCommand<T = unknown>(request: object): Promise<T | null> {
     child.on('error', (err) => {
       clearTimeout(timeout);
       console.error('[mtp-cli] spawn error:', err.message);
-      resolve(null);
+      done(null);
     });
     child.on('close', (code) => {
       clearTimeout(timeout);
       if (stderr) console.error('[mtp-cli] stderr:', stderr.trim());
       if (code !== 0) {
         console.error('[mtp-cli] exited with code', code, 'stdout:', stdout.trim());
-        resolve(null);
+        done(null);
         return;
       }
       try {
         const line = stdout.trim().split('\n').find((l) => l.startsWith('{'));
-        if (line) resolve(JSON.parse(line) as T);
+        if (line) done(JSON.parse(line) as T);
         else {
           console.error('[mtp-cli] no JSON in output:', stdout.trim());
-          resolve(null);
+          done(null);
         }
       } catch {
         console.error('[mtp-cli] JSON parse error, stdout:', stdout.trim());
-        resolve(null);
+        done(null);
       }
     });
 
     child.stdin?.write(JSON.stringify(request) + '\n', (err) => {
-      if (err) resolve(null);
+      if (err) done(null);
       child.stdin?.end();
     });
   });
@@ -189,6 +202,27 @@ export async function getMtpDevices(): Promise<MtpDeviceInfo[]> {
       storages: res.storages!,
     };
   });
+}
+
+/**
+ * MTP セッションをクリーンに切断する。
+ * mtp-cli はコマンドごとに MTP セッションを開閉するので、実行中のプロセスを
+ * 終了させればデバイス側のセッションが解放され、ケーブルを抜いても
+ * Walkman がデータベース再構築に進める状態になる。
+ * @returns 終了させたプロセス数
+ */
+export function mtpDisconnect(): number {
+  const running = [...activeProcesses];
+  activeProcesses.clear();
+  for (const child of running) {
+    try {
+      // SIGTERM で終わらないケース（libusb の転送待ち）に備えて SIGKILL
+      child.kill('SIGKILL');
+    } catch {
+      // すでに終了している
+    }
+  }
+  return running.length;
 }
 
 /**

@@ -11,9 +11,17 @@ vi.mock('child_process', () => ({
 vi.mock('../mtp', () => ({
   getMtpDevices: vi.fn(async () => []),
   isMtpCliAvailable: vi.fn(() => false),
+  isMtpPath: (p: string) => p.startsWith('mtp://'),
 }));
 
-import { getConnectedWalkman } from '../device';
+import {
+  getConnectedWalkman,
+  markDeviceEjected,
+  refreshDevices,
+  resetEjectedDevices,
+  watchDevices,
+  stopWatchingDevices,
+} from '../device';
 import { execSync } from 'child_process';
 import { isMtpCliAvailable, getMtpDevices } from '../mtp';
 
@@ -56,6 +64,8 @@ beforeEach(() => {
   // Default: stat returns hfs (not network)
   vi.mocked(execSync).mockReturnValue('hfs\n');
   vi.mocked(isMtpCliAvailable).mockReturnValue(false);
+  resetEjectedDevices();
+  stopWatchingDevices();
 });
 
 describe('getConnectedWalkman', () => {
@@ -216,5 +226,134 @@ describe('getConnectedWalkman', () => {
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(0);
+  });
+});
+
+describe('markDeviceEjected', () => {
+  it('hides an ejected USB volume that is still mounted', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+
+    markDeviceEjected('/Volumes/WALKMAN');
+
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it('keeps other volumes visible when one is ejected', async () => {
+    mockVolumes([
+      { name: 'WALKMAN', isDir: true, hasMusicFolder: true },
+      { name: 'SD_CARD', isDir: true, hasMusicFolder: false },
+    ]);
+
+    markDeviceEjected('/Volumes/WALKMAN');
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(1);
+    expect(devices[0].mountPath).toBe('/Volumes/SD_CARD');
+  });
+
+  it('shows the volume again after it is unmounted and reconnected', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    markDeviceEjected('/Volumes/WALKMAN');
+    expect(await getConnectedWalkman()).toHaveLength(0);
+
+    // アンマウントされた（= 取り出し完了）
+    mockVolumes([]);
+    expect(await getConnectedWalkman()).toHaveLength(0);
+
+    // 再接続
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    expect(await getConnectedWalkman()).toHaveLength(1);
+  });
+
+  it('hides every storage of an ejected MTP device', async () => {
+    mockVolumes([]);
+    vi.mocked(isMtpCliAvailable).mockReturnValue(true);
+    vi.mocked(getMtpDevices).mockResolvedValue([
+      { name: 'NW-A306 (内蔵)', mountPath: 'mtp://65537', isWalkman: true },
+      { name: 'NW-A306 (SDカード)', mountPath: 'mtp://65538', isWalkman: true },
+    ] as any);
+
+    // 内蔵ストレージを取り出す → デバイスごと（SD カードも）一覧から消える
+    markDeviceEjected('mtp://65537');
+
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it('keeps an ejected MTP device hidden while the cable stays connected', async () => {
+    mockVolumes([]);
+    vi.mocked(isMtpCliAvailable).mockReturnValue(true);
+    vi.mocked(getMtpDevices).mockResolvedValue([
+      { name: 'NW-A306', mountPath: 'mtp://65537', isWalkman: true },
+    ] as any);
+
+    markDeviceEjected('mtp://65537');
+
+    // ポーリングが何度走っても復活しない（旧実装のバグ）
+    expect(await getConnectedWalkman()).toHaveLength(0);
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it('shows an MTP device again after the cable is unplugged and reconnected', async () => {
+    mockVolumes([]);
+    vi.mocked(isMtpCliAvailable).mockReturnValue(true);
+    vi.mocked(getMtpDevices).mockResolvedValue([
+      { name: 'NW-A306', mountPath: 'mtp://65537', isWalkman: true },
+    ] as any);
+    markDeviceEjected('mtp://65537');
+    expect(await getConnectedWalkman()).toHaveLength(0);
+
+    // ケーブルを抜いた → MTP デバイスが検出されなくなる
+    vi.mocked(getMtpDevices).mockResolvedValue([]);
+    expect(await getConnectedWalkman()).toHaveLength(0);
+
+    // 繋ぎ直した
+    vi.mocked(getMtpDevices).mockResolvedValue([
+      { name: 'NW-A306', mountPath: 'mtp://65537', isWalkman: true },
+    ] as any);
+    expect(await getConnectedWalkman()).toHaveLength(1);
+  });
+
+  it('does not hide USB volumes when an MTP device is ejected', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    vi.mocked(isMtpCliAvailable).mockReturnValue(true);
+    vi.mocked(getMtpDevices).mockResolvedValue([
+      { name: 'NW-A306', mountPath: 'mtp://65537', isWalkman: true },
+    ] as any);
+
+    markDeviceEjected('mtp://65537');
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(1);
+    expect(devices[0].mountPath).toBe('/Volumes/WALKMAN');
+  });
+});
+
+describe('refreshDevices', () => {
+  it('notifies the watcher immediately after an eject', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    const callback = vi.fn();
+    watchDevices(callback);
+    // watchDevices の初回チェックを待つ
+    await Promise.resolve();
+    await Promise.resolve();
+    callback.mockClear();
+
+    markDeviceEjected('/Volumes/WALKMAN');
+    const devices = await refreshDevices();
+
+    expect(devices).toHaveLength(0);
+    expect(callback).toHaveBeenCalledWith([]);
+  });
+
+  it('notifies even when the device list is unchanged', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    const callback = vi.fn();
+    watchDevices(callback);
+    await refreshDevices();
+    callback.mockClear();
+
+    await refreshDevices();
+
+    expect(callback).toHaveBeenCalledTimes(1);
   });
 });

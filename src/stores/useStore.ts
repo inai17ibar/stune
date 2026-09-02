@@ -28,6 +28,8 @@ interface AppState {
   activeDevice: WalkmanDevice | null;
   setDevices: (devices: WalkmanDevice[]) => void;
   setActiveDevice: (device: WalkmanDevice | null) => void;
+  /** 取り出したデバイスを一覧から即座に外す（main 側の再検出を待たない） */
+  removeDevice: (mountPath: string) => void;
   /** 接続検出時に表示するトースト（例: "Walkman が接続されました"） */
   connectionToast: string | null;
   setConnectionToast: (msg: string | null) => void;
@@ -91,6 +93,13 @@ export const useStore = create<AppState>((set) => ({
   setDevices: (devices) => set({ devices }),
   setActiveDevice: (activeDevice) =>
     set({ activeDevice, viewMode: 'device' }),
+  removeDevice: (mountPath) =>
+    set((state) => {
+      const devices = state.devices.filter((d) => d.mountPath !== mountPath);
+      if (state.activeDevice?.mountPath !== mountPath) return { devices };
+      // 取り出したデバイスを表示中なら、ライブラリ表示に戻す
+      return { devices, activeDevice: null, viewMode: 'library' };
+    }),
   connectionToast: null,
   setConnectionToast: (connectionToast) => set({ connectionToast }),
 
