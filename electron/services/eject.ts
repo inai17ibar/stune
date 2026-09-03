@@ -81,6 +81,16 @@ function validateVolumePath(mountPath: string, original: string): string | null 
   return null;
 }
 
+/**
+ * ネットワークボリューム（SMB / NFS など）は diskutil では取り出せない。
+ * 検出側で除外しているので通常は届かないが、届いた場合に原因の分かるメッセージを返す。
+ */
+function isNotEjectableError(output: string): boolean {
+  return /not an? .*(eject|disk)|network (volume|mount)|does not appear to be/i.test(
+    output
+  );
+}
+
 function isBusyError(output: string): boolean {
   return /busy|in use|dissent|couldn't unmount|could not be unmounted|unmount failed/i.test(
     output
@@ -135,6 +145,14 @@ async function ejectUsbVolume(mountPath: string): Promise<EjectResult> {
     return {
       success: true,
       message: 'デバイスはすでに取り出されています。',
+    };
+  }
+
+  if (isNotEjectableError(ejected.output)) {
+    return {
+      success: false,
+      message:
+        'このボリュームは取り出せません（ネットワーク共有などの可能性があります）。Finder から取り外してください。',
     };
   }
 

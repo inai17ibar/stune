@@ -229,6 +229,100 @@ describe('getConnectedWalkman', () => {
   });
 });
 
+// `/sbin/mount` の出力を模す。それ以外のコマンド（diskutil info）は空を返す。
+function mockMountOutput(lines: string[]) {
+  vi.mocked(execSync).mockImplementation(((cmd: string) => {
+    if (cmd.includes('mount')) return `${lines.join('\n')}\n`;
+    return '';
+  }) as any);
+}
+
+const LOCAL_USB_LINE =
+  '/dev/disk4s1 on /Volumes/WALKMAN (msdos, local, nodev, nosuid, noowners)';
+
+describe('network volume detection via /sbin/mount', () => {
+  it('excludes an SMB share even when its name looks like a Walkman', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    mockMountOutput([
+      '//guest@nas._smb._tcp.local/Music on /Volumes/WALKMAN (smbfs, nodev, nosuid, read-only, mounted by me)',
+    ]);
+
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it.each([
+    ['smbfs', '//guest@nas/Music on /Volumes/Share (smbfs, nodev, nosuid)'],
+    ['nfs', 'nas:/export/music on /Volumes/Share (nfs, nodev, nosuid)'],
+    ['afpfs', 'afp_x on /Volumes/Share (afpfs, nodev, nosuid)'],
+    ['webdav', 'https://dav.example on /Volumes/Share (webdav, nodev, nosuid)'],
+  ])('excludes %s mounts with a Music folder', async (_type, mountLine) => {
+    mockVolumes([{ name: 'Share', isDir: true, hasMusicFolder: true }]);
+    mockMountOutput([mountLine]);
+
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it('keeps a local USB volume listed in mount output', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    mockMountOutput([
+      '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
+      LOCAL_USB_LINE,
+    ]);
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(1);
+    expect(devices[0].mountPath).toBe('/Volumes/WALKMAN');
+  });
+
+  it('handles volume names containing spaces and " on "', async () => {
+    mockVolumes([{ name: 'Music on Tour', isDir: true, hasMusicFolder: true }]);
+    mockMountOutput([
+      '//guest@nas/Music on /Volumes/Music on Tour (smbfs, nodev, nosuid)',
+    ]);
+
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it('keeps detecting devices when mount fails (falls back to diskutil)', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    vi.mocked(execSync).mockImplementation(((cmd: string) => {
+      if (cmd.includes('mount')) throw new Error('mount not found');
+      return 'Protocol: USB\n';
+    }) as any);
+
+    expect(await getConnectedWalkman()).toHaveLength(1);
+  });
+
+  it('excludes a volume whose diskutil Protocol is SMB (mount unavailable)', async () => {
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    vi.mocked(execSync).mockImplementation(((cmd: string) => {
+      if (cmd.includes('mount')) throw new Error('mount not found');
+      return '   Protocol:                  SMB\n';
+    }) as any);
+
+    expect(await getConnectedWalkman()).toHaveLength(0);
+  });
+
+  it('runs mount only once per detection cycle', async () => {
+    mockVolumes([
+      { name: 'WALKMAN', isDir: true, hasMusicFolder: true },
+      { name: 'SD_CARD', isDir: true, hasMusicFolder: false },
+      { name: 'Share', isDir: true, hasMusicFolder: true },
+    ]);
+    mockMountOutput([
+      LOCAL_USB_LINE,
+      '/dev/disk5s1 on /Volumes/SD_CARD (msdos, local, nodev)',
+      '//guest@nas/Music on /Volumes/Share (smbfs, nodev, nosuid)',
+    ]);
+
+    vi.mocked(execSync).mockClear();
+    const devices = await getConnectedWalkman();
+
+    expect(devices).toHaveLength(2);
+    expect(vi.mocked(execSync)).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('markDeviceEjected', () => {
   it('hides an ejected USB volume that is still mounted', async () => {
     mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);

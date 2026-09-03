@@ -7,8 +7,23 @@ import { getMtpDevices, isMtpCliAvailable, isMtpPath } from './mtp';
 const WALKMAN_INDICATORS = ['WALKMAN', 'NW-A', 'NW-ZX', 'NW-WM', 'SONY'];
 // SD card volume names commonly used with Walkman
 const SD_CARD_INDICATORS = ['SD_CARD', 'SDCARD', 'SD CARD', 'MICROSD', 'WALKMAN_SD', 'NW_SD'];
-// Network filesystem types to exclude
-const NETWORK_FS_TYPES = ['smbfs', 'nfs', 'afpfs', 'cifs', 'webdavfs', 'acfs'];
+// Network filesystem types to exclude（`mount` / `diskutil info` が返す表記）
+const NETWORK_FS_TYPES = [
+  'smbfs',
+  'nfs',
+  'afpfs',
+  'cifs',
+  'webdav',
+  'acfs',
+  'ftp',
+  'sshfs',
+];
+// `diskutil info` の Protocol フィールドがこれらならネットワーク越しのボリューム
+const NETWORK_PROTOCOLS = ['smb', 'nfs', 'afp', 'cifs', 'webdav', 'network'];
+// GUI から起動した Electron の PATH には /sbin が無いことがあるので絶対パスを使う
+const MOUNT_BINARY = '/sbin/mount';
+const DISKUTIL_BINARY = '/usr/sbin/diskutil';
+const EXEC_TIMEOUT_MS = 2000;
 
 export interface DetectedDevice {
   name: string;
@@ -26,11 +41,17 @@ async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
     const entries = await fs.promises.readdir(volumesPath, {
       withFileTypes: true,
     });
+    // ファイルシステム種別は 1 回の検出で一括取得する（ボリュームごとに mount を叩かない）
+    const mountedFsTypes = getMountedFsTypes();
 
     for (const entry of entries) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 
       const mountPath = path.join(volumesPath, entry.name);
+
+      // ネットワークボリュームは名前が WALKMAN でも Walkman ではありえないので完全に除外する
+      // （diskutil eject でも取り出せないため、一覧に出しても操作できない）
+      if (isNetworkVolume(mountPath, mountedFsTypes)) continue;
 
       // Check if it has a MUSIC folder (common Walkman indicator)
       const hasMusicFolder = await checkMusicFolder(mountPath);
@@ -44,10 +65,8 @@ async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
         upperName.includes(indicator)
       );
 
-      // Name match or SD card pattern → always include
-      // MUSIC folder only → include only if NOT a network volume
-      const isWalkman = nameMatch || isSdCard
-        || (hasMusicFolder && !isNetworkVolume(mountPath));
+      // ここに来る時点でネットワークボリュームは除外済み
+      const isWalkman = nameMatch || isSdCard || hasMusicFolder;
 
       if (isWalkman) {
         // Require name match or SD card for non-MUSIC-folder-only detections
@@ -91,20 +110,88 @@ async function checkMusicFolder(mountPath: string): Promise<boolean> {
   return false;
 }
 
+/** ファイルシステム種別 / プロトコル名がネットワーク越しのものかを判定する */
+function isNetworkFsType(fsType: string): boolean {
+  const normalized = fsType.trim().toLowerCase();
+  return NETWORK_FS_TYPES.some(
+    (nfs) => normalized === nfs || normalized.startsWith(`${nfs}_`) ||
+      normalized.includes(nfs)
+  );
+}
+
 /**
- * Check if a mount path is a network volume (SMB, NFS, AFP, etc.).
- * Uses `stat -f %T` to get the filesystem type on macOS.
+ * `/sbin/mount` の 1 行をパースする。
+ * 例: `//guest@nas._smb._tcp.local/Music on /Volumes/Music (smbfs, nodev, nosuid)`
+ *
+ * デバイス部分は最短一致（" on " を含まない前提）、マウントポイントは最長一致にして
+ * `/Volumes/Music on Tour` のようなスペース入りボリューム名にも対応する。
  */
-function isNetworkVolume(mountPath: string): boolean {
+function parseMountLine(
+  line: string
+): { mountPath: string; fsType: string } | null {
+  const match = line.match(/^(.+?) on (.+) \(([^()]*)\)\s*$/);
+  if (!match) return null;
+  const fsType = match[3].split(',')[0].trim().toLowerCase();
+  if (!fsType) return null;
+  return { mountPath: match[2], fsType };
+}
+
+/**
+ * `/sbin/mount` の出力からマウントポイント → ファイルシステム種別のマップを作る。
+ * macOS の BSD `stat` には `%T` でファイルシステム種別を返す機能が無く、
+ * 旧実装（`stat -f '%T'`）ではネットワークボリュームを判別できなかった。
+ */
+function getMountedFsTypes(): Map<string, string> {
+  const map = new Map<string, string>();
   try {
-    const fsType = execSync(`stat -f '%T' ${JSON.stringify(mountPath)}`, {
+    const output = execSync(MOUNT_BINARY, {
       encoding: 'utf-8',
-      timeout: 2000,
-    }).trim().toLowerCase();
-    return NETWORK_FS_TYPES.some((nfs) => fsType.includes(nfs));
+      timeout: EXEC_TIMEOUT_MS,
+    });
+    for (const line of output.split('\n')) {
+      const parsed = parseMountLine(line);
+      if (parsed) map.set(parsed.mountPath, parsed.fsType);
+    }
   } catch {
+    // mount が使えない（macOS 以外など）→ 呼び出し側でフォールバックする
+  }
+  return map;
+}
+
+/**
+ * `mount` でマウントポイントを特定できなかった場合のフォールバック。
+ * `diskutil info` の Protocol フィールド（USB / SATA / SMB など）で判定する。
+ */
+function isNetworkVolumeViaDiskutil(mountPath: string): boolean {
+  try {
+    const output = execSync(
+      `${DISKUTIL_BINARY} info ${JSON.stringify(mountPath)}`,
+      { encoding: 'utf-8', timeout: EXEC_TIMEOUT_MS }
+    ).toLowerCase();
+    const protocol = output.match(/^\s*protocol:\s*(.+)$/m)?.[1];
+    if (protocol) {
+      return NETWORK_PROTOCOLS.some((p) => protocol.includes(p));
+    }
+    // Protocol 行が無い場合はファイルシステム種別の記載から判定する
+    return isNetworkFsType(output);
+  } catch {
+    // diskutil がボリュームを認識しない = 物理ディスクではないが、
+    // ネットワークとは断定できないので除外しない
     return false;
   }
+}
+
+/**
+ * マウントパスがネットワークボリューム（SMB / NFS / AFP など）かを判定する。
+ * `mountedFsTypes` は `getMountedFsTypes()` の結果（1 回の検出で使い回す）。
+ */
+function isNetworkVolume(
+  mountPath: string,
+  mountedFsTypes: Map<string, string>
+): boolean {
+  const fsType = mountedFsTypes.get(mountPath);
+  if (fsType !== undefined) return isNetworkFsType(fsType);
+  return isNetworkVolumeViaDiskutil(mountPath);
 }
 
 // ===== 取り出し（イジェクト）済みデバイスの抑制 =====
