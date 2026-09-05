@@ -11,6 +11,7 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import { isMtpPath, mtpDisconnect } from './mtp';
 import { markDeviceEjected } from './device';
+import { isNetworkVolume } from './mounts';
 
 /**
  * diskutil の絶対パス。GUI から起動された Electron アプリの PATH は最小限で
@@ -113,10 +114,37 @@ async function resolveWholeDisk(mountPath: string): Promise<string | null> {
   return match ? `/dev/${match[1]}` : null;
 }
 
+/**
+ * ネットワークボリュームを切断する。
+ * `diskutil eject` は物理ディスクを対象とするため SMB / NFS 等では失敗する
+ * （"Failed to find disk"）。アンマウントが正しい操作。
+ */
+async function disconnectNetworkVolume(
+  normalized: string
+): Promise<EjectResult> {
+  const unmounted = await runDiskutil(['unmount', normalized]);
+  if (!unmounted.ok && !isMissingVolumeError(unmounted.output)) {
+    return {
+      success: false,
+      message: `ネットワークボリュームの切断に失敗しました: ${firstLine(unmounted.output)}`,
+    };
+  }
+
+  markDeviceEjected(normalized);
+  return {
+    success: true,
+    message: 'ネットワークボリュームを切断しました。',
+  };
+}
+
 async function ejectUsbVolume(mountPath: string): Promise<EjectResult> {
   const normalized = normalizeMountPath(mountPath);
   const invalid = validateVolumePath(normalized, mountPath);
   if (invalid) return { success: false, message: invalid };
+
+  if (isNetworkVolume(normalized)) {
+    return await disconnectNetworkVolume(normalized);
+  }
 
   const wholeDisk = await resolveWholeDisk(normalized);
 

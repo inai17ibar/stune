@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// diskutil の実行をモック（テストは CI の Linux でも走る）
+// diskutil / mount の実行をモック（テストは CI の Linux でも走る）
 vi.mock('child_process', () => ({
   execFile: vi.fn(),
+  execFileSync: vi.fn(() => ''),
 }));
 
 vi.mock('../mtp', () => ({
@@ -15,7 +16,7 @@ vi.mock('../device', () => ({
 }));
 
 import { ejectDevice } from '../eject';
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { mtpDisconnect } from '../mtp';
 import { markDeviceEjected } from '../device';
 
@@ -44,8 +45,17 @@ function mockDiskutil(
 const BUSY_OUTPUT =
   'Unmount failed for /Volumes/WALKMAN\nVolume WALKMAN on disk4s1 failed to unmount: dissented by PID 123 (Finder)';
 
+/** `/sbin/mount` の出力をモックして、指定パスをネットワークマウントに見せる */
+function mockNetworkMount(mountPoint: string, fsType = 'smbfs') {
+  vi.mocked(execFileSync).mockReturnValue(
+    `//guest@nas._smb._tcp.local/share on ${mountPoint} (${fsType}, nodev, nosuid)`
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // 既定ではローカルボリューム（mount の出力にマウントポイントが現れない）
+  vi.mocked(execFileSync).mockReturnValue('');
 });
 
 describe('ejectDevice — USB volume', () => {
@@ -167,6 +177,52 @@ describe('ejectDevice — USB volume', () => {
     expect(calls.filter((c) => c[0] === 'eject')).toEqual([
       ['eject', '/Volumes/WALKMAN'],
     ]);
+  });
+});
+
+describe('ejectDevice — network volume', () => {
+  it('unmounts instead of ejecting (diskutil eject fails on SMB)', async () => {
+    mockNetworkMount('/Volumes/NAS_Music');
+    const { calls } = mockDiskutil(() => ({
+      stdout: 'Volume NAS_Music on disk0s0 unmounted',
+    }));
+
+    const result = await ejectDevice('/Volumes/NAS_Music');
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('ネットワークボリュームを切断しました');
+    expect(calls).toContainEqual(['unmount', '/Volumes/NAS_Music']);
+    expect(calls.some((c) => c[0] === 'eject')).toBe(false);
+    expect(markDeviceEjected).toHaveBeenCalledWith('/Volumes/NAS_Music');
+  });
+
+  it('treats an already-unmounted network volume as success', async () => {
+    mockNetworkMount('/Volumes/NAS_Music', 'nfs');
+    mockDiskutil(() => ({
+      error: new Error('exit 1'),
+      stdout: 'Could not find disk: /Volumes/NAS_Music',
+    }));
+
+    const result = await ejectDevice('/Volumes/NAS_Music');
+
+    expect(result.success).toBe(true);
+    expect(markDeviceEjected).toHaveBeenCalledWith('/Volumes/NAS_Music');
+  });
+
+  it('reports an unmount failure', async () => {
+    mockNetworkMount('/Volumes/NAS_Music');
+    mockDiskutil(() => ({
+      error: new Error('exit 1'),
+      stderr: 'Unmount failed\nmore detail',
+    }));
+
+    const result = await ejectDevice('/Volumes/NAS_Music');
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      'ネットワークボリュームの切断に失敗しました: Unmount failed'
+    );
+    expect(markDeviceEjected).not.toHaveBeenCalled();
   });
 });
 

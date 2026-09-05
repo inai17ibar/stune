@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Mock child_process
+// Mock child_process（`/sbin/mount` の実行）
 vi.mock('child_process', () => ({
-  execSync: vi.fn(() => 'hfs\n'),
+  execFileSync: vi.fn(() => ''),
 }));
 
 // Mock MTP service
@@ -22,8 +22,25 @@ import {
   watchDevices,
   stopWatchingDevices,
 } from '../device';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { isMtpCliAvailable, getMtpDevices } from '../mtp';
+
+const ROOT_MOUNT_LINE =
+  '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)';
+
+/**
+ * `/sbin/mount` の出力をモックする。
+ * 例: mockMountTable({ '/Volumes/NAS': 'smbfs' })
+ */
+function mockMountTable(fsTypeByMountPoint: Record<string, string>) {
+  const lines = Object.entries(fsTypeByMountPoint).map(
+    ([mountPoint, fsType]) =>
+      `//guest@nas._smb._tcp.local/share on ${mountPoint} (${fsType}, nodev, nosuid, mounted by me)`
+  );
+  vi.mocked(execFileSync).mockReturnValue(
+    [ROOT_MOUNT_LINE, ...lines].join('\n')
+  );
+}
 
 // Helper to mock /Volumes directory listing
 function mockVolumes(
@@ -61,8 +78,8 @@ function mockVolumes(
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  // Default: stat returns hfs (not network)
-  vi.mocked(execSync).mockReturnValue('hfs\n');
+  // Default: /Volumes 配下にネットワークマウントは無い
+  mockMountTable({});
   vi.mocked(isMtpCliAvailable).mockReturnValue(false);
   resetEjectedDevices();
   stopWatchingDevices();
@@ -105,7 +122,7 @@ describe('getConnectedWalkman', () => {
     mockVolumes([
       { name: 'MyDevice', isDir: true, hasMusicFolder: true },
     ]);
-    vi.mocked(execSync).mockReturnValue('hfs\n');
+    mockMountTable({ '/Volumes/MyDevice': 'msdos' });
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(1);
@@ -116,20 +133,88 @@ describe('getConnectedWalkman', () => {
     mockVolumes([
       { name: 'NAS_Share', isDir: true, hasMusicFolder: true },
     ]);
-    vi.mocked(execSync).mockReturnValue('smbfs\n');
+    mockMountTable({ '/Volumes/NAS_Share': 'smbfs' });
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(0);
   });
 
-  it('excludes NFS network volumes', async () => {
-    mockVolumes([
-      { name: 'NetworkDrive', isDir: true, hasMusicFolder: true },
-    ]);
-    vi.mocked(execSync).mockReturnValue('nfs\n');
+  it.each(['nfs', 'afpfs', 'cifs', 'webdav', 'webdavfs', 'ftp'])(
+    'excludes %s network volumes',
+    async (fsType) => {
+      mockVolumes([
+        { name: 'NetworkDrive', isDir: true, hasMusicFolder: true },
+      ]);
+      mockMountTable({ '/Volumes/NetworkDrive': fsType });
+
+      const devices = await getConnectedWalkman();
+      expect(devices).toHaveLength(0);
+    }
+  );
+
+  it('excludes a network share even when its name matches a Walkman', async () => {
+    // NAS 上の共有フォルダを "WALKMAN" という名前でマウントしているケース
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    mockMountTable({ '/Volumes/WALKMAN': 'smbfs' });
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(0);
+  });
+
+  it('excludes a network share whose name looks like an SD card', async () => {
+    mockVolumes([{ name: 'SD_CARD', isDir: true, hasMusicFolder: true }]);
+    mockMountTable({ '/Volumes/SD_CARD': 'nfs' });
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(0);
+  });
+
+  it('keeps a local volume mounted next to a network share', async () => {
+    mockVolumes([
+      { name: 'WALKMAN', isDir: true, hasMusicFolder: true },
+      { name: 'NAS_Music', isDir: true, hasMusicFolder: true },
+    ]);
+    mockMountTable({
+      '/Volumes/WALKMAN': 'exfat',
+      '/Volumes/NAS_Music': 'smbfs',
+    });
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(1);
+    expect(devices[0].mountPath).toBe('/Volumes/WALKMAN');
+  });
+
+  it('handles volume names containing spaces', async () => {
+    mockVolumes([{ name: 'My NAS on Air', isDir: true, hasMusicFolder: true }]);
+    mockMountTable({ '/Volumes/My NAS on Air': 'smbfs' });
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(0);
+  });
+
+  it('keeps the device visible when the mount table is unavailable', async () => {
+    // macOS 以外や mount が実行できない環境では判定不能 → 隠さない
+    mockVolumes([{ name: 'WALKMAN', isDir: true, hasMusicFolder: true }]);
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(1);
+  });
+
+  it('runs mount only once per scan', async () => {
+    mockVolumes([
+      { name: 'WALKMAN', isDir: true, hasMusicFolder: true },
+      { name: 'SD_CARD', isDir: true, hasMusicFolder: false },
+      { name: 'NAS_Music', isDir: true, hasMusicFolder: true },
+    ]);
+    mockMountTable({ '/Volumes/NAS_Music': 'smbfs' });
+    vi.mocked(execFileSync).mockClear();
+
+    await getConnectedWalkman();
+
+    expect(execFileSync).toHaveBeenCalledTimes(1);
   });
 
   it('excludes boot volume even with Music folder', async () => {
