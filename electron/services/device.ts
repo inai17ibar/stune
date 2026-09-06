@@ -1,14 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { getMtpDevices, isMtpCliAvailable, isMtpPath } from './mtp';
+import { isNetworkVolume, readMountTable } from './volumeInfo';
 
 // Known Walkman identifiers to detect
 const WALKMAN_INDICATORS = ['WALKMAN', 'NW-A', 'NW-ZX', 'NW-WM', 'SONY'];
 // SD card volume names commonly used with Walkman
 const SD_CARD_INDICATORS = ['SD_CARD', 'SDCARD', 'SD CARD', 'MICROSD', 'WALKMAN_SD', 'NW_SD'];
-// Network filesystem types to exclude
-const NETWORK_FS_TYPES = ['smbfs', 'nfs', 'afpfs', 'cifs', 'webdavfs', 'acfs'];
 
 export interface DetectedDevice {
   name: string;
@@ -27,6 +25,9 @@ async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
       withFileTypes: true,
     });
 
+    // マウント一覧は 1 回だけ取得して全ボリュームの判定に使い回す
+    const mountTable = readMountTable();
+
     for (const entry of entries) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 
@@ -44,31 +45,32 @@ async function detectWalkmanVolumes(): Promise<DetectedDevice[]> {
         upperName.includes(indicator)
       );
 
-      // Name match or SD card pattern → always include
-      // MUSIC folder only → include only if NOT a network volume
-      const isWalkman = nameMatch || isSdCard
-        || (hasMusicFolder && !isNetworkVolume(mountPath));
+      const isWalkman = nameMatch || isSdCard || hasMusicFolder;
+      if (!isWalkman) continue;
 
-      if (isWalkman) {
-        // Require name match or SD card for non-MUSIC-folder-only detections
-        // Skip generic volumes that just happen to have a Music folder
-        if (!nameMatch && !isSdCard && hasMusicFolder) {
-          // Extra check: only include if it looks like a portable device
-          // (has MUSIC folder AND is not the boot volume or a large disk)
-          const isBootVolume = mountPath === '/Volumes/Macintosh HD'
-            || mountPath === '/Volumes/Macintosh HD - Data';
-          if (isBootVolume) continue;
-        }
+      // ネットワークマウント（SMB/NFS/AFP 等）は Walkman ではありえないので、
+      // 名前が一致していても一覧から完全に除外する。
+      // 候補になったボリュームだけ調べる（mount に無いパスは diskutil を叩くため）
+      if (isNetworkVolume(mountPath, mountTable)) continue;
 
-        const displayName = isSdCard && !nameMatch
-          ? `${entry.name} (SD Card)`
-          : entry.name;
-        devices.push({
-          name: displayName,
-          mountPath,
-          isWalkman: true,
-        });
+      // Require name match or SD card for non-MUSIC-folder-only detections
+      // Skip generic volumes that just happen to have a Music folder
+      if (!nameMatch && !isSdCard && hasMusicFolder) {
+        // Extra check: only include if it looks like a portable device
+        // (has MUSIC folder AND is not the boot volume or a large disk)
+        const isBootVolume = mountPath === '/Volumes/Macintosh HD'
+          || mountPath === '/Volumes/Macintosh HD - Data';
+        if (isBootVolume) continue;
       }
+
+      const displayName = isSdCard && !nameMatch
+        ? `${entry.name} (SD Card)`
+        : entry.name;
+      devices.push({
+        name: displayName,
+        mountPath,
+        isWalkman: true,
+      });
     }
   } catch {
     // /Volumes not accessible (not on macOS or permission issue)
@@ -89,22 +91,6 @@ async function checkMusicFolder(mountPath: string): Promise<boolean> {
     }
   }
   return false;
-}
-
-/**
- * Check if a mount path is a network volume (SMB, NFS, AFP, etc.).
- * Uses `stat -f %T` to get the filesystem type on macOS.
- */
-function isNetworkVolume(mountPath: string): boolean {
-  try {
-    const fsType = execSync(`stat -f '%T' ${JSON.stringify(mountPath)}`, {
-      encoding: 'utf-8',
-      timeout: 2000,
-    }).trim().toLowerCase();
-    return NETWORK_FS_TYPES.some((nfs) => fsType.includes(nfs));
-  } catch {
-    return false;
-  }
 }
 
 // ===== 取り出し（イジェクト）済みデバイスの抑制 =====
