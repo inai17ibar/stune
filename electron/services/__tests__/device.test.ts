@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Mock child_process
+// Mock child_process（device は /sbin/mount でファイルシステム種別を調べる）
 vi.mock('child_process', () => ({
-  execSync: vi.fn(() => 'hfs\n'),
+  execSync: vi.fn(() => ''),
 }));
 
 // Mock MTP service
@@ -26,9 +26,26 @@ import { execSync } from 'child_process';
 import { isMtpCliAvailable, getMtpDevices } from '../mtp';
 
 // Helper to mock /Volumes directory listing
+// fsType を指定すると `/sbin/mount` の該当行に反映される（既定はローカルの apfs）
 function mockVolumes(
-  entries: Array<{ name: string; isDir: boolean; hasMusicFolder?: boolean }>
+  entries: Array<{
+    name: string;
+    isDir: boolean;
+    hasMusicFolder?: boolean;
+    fsType?: string;
+  }>
 ) {
+  // Mock `/sbin/mount` output
+  const mountOutput = [
+    '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
+    'devfs on /dev (devfs, local, nobrowse)',
+    ...entries.map(
+      (e, i) =>
+        `/dev/disk${i + 4}s1 on /Volumes/${e.name} (${e.fsType ?? 'apfs'}, local, nodev, nosuid)`
+    ),
+  ].join('\n');
+  vi.mocked(execSync).mockReturnValue(mountOutput as any);
+
   // Mock readdir
   vi.spyOn(fs.promises, 'readdir').mockResolvedValue(
     entries.map((e) => ({
@@ -61,8 +78,8 @@ function mockVolumes(
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  // Default: stat returns hfs (not network)
-  vi.mocked(execSync).mockReturnValue('hfs\n');
+  // Default: mount 一覧は空（= ローカル扱い）
+  vi.mocked(execSync).mockReturnValue('' as any);
   vi.mocked(isMtpCliAvailable).mockReturnValue(false);
   resetEjectedDevices();
   stopWatchingDevices();
@@ -103,9 +120,8 @@ describe('getConnectedWalkman', () => {
 
   it('detects volume with MUSIC folder (non-network)', async () => {
     mockVolumes([
-      { name: 'MyDevice', isDir: true, hasMusicFolder: true },
+      { name: 'MyDevice', isDir: true, hasMusicFolder: true, fsType: 'msdos' },
     ]);
-    vi.mocked(execSync).mockReturnValue('hfs\n');
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(1);
@@ -114,9 +130,8 @@ describe('getConnectedWalkman', () => {
 
   it('excludes network volume with MUSIC folder', async () => {
     mockVolumes([
-      { name: 'NAS_Share', isDir: true, hasMusicFolder: true },
+      { name: 'NAS_Share', isDir: true, hasMusicFolder: true, fsType: 'smbfs' },
     ]);
-    vi.mocked(execSync).mockReturnValue('smbfs\n');
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(0);
@@ -124,9 +139,54 @@ describe('getConnectedWalkman', () => {
 
   it('excludes NFS network volumes', async () => {
     mockVolumes([
-      { name: 'NetworkDrive', isDir: true, hasMusicFolder: true },
+      { name: 'NetworkDrive', isDir: true, hasMusicFolder: true, fsType: 'nfs' },
     ]);
-    vi.mocked(execSync).mockReturnValue('nfs\n');
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(0);
+  });
+
+  it.each(['afpfs', 'cifs', 'webdav', 'ftp', 'sshfs'])(
+    'excludes %s network volumes',
+    async (fsType) => {
+      mockVolumes([
+        { name: 'Shared', isDir: true, hasMusicFolder: true, fsType },
+      ]);
+
+      const devices = await getConnectedWalkman();
+      expect(devices).toHaveLength(0);
+    }
+  );
+
+  it('excludes a network volume even when its name looks like a Walkman', async () => {
+    // NAS 上に "WALKMAN" という共有名を作っていても検出しない
+    mockVolumes([
+      { name: 'WALKMAN', isDir: true, hasMusicFolder: true, fsType: 'smbfs' },
+    ]);
+
+    const devices = await getConnectedWalkman();
+    expect(devices).toHaveLength(0);
+  });
+
+  it('reads the filesystem type from /sbin/mount, not from stat', async () => {
+    mockVolumes([
+      { name: 'NAS_Share', isDir: true, hasMusicFolder: true, fsType: 'smbfs' },
+    ]);
+
+    await getConnectedWalkman();
+
+    const commands = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
+    expect(commands).toContain('/sbin/mount');
+    expect(commands.some((c) => c.includes('stat -f'))).toBe(false);
+  });
+
+  it('falls back to diskutil Protocol when the volume is missing from mount', async () => {
+    mockVolumes([{ name: 'NAS_Share', isDir: true, hasMusicFolder: true }]);
+    // mount には現れないが diskutil はネットワーク接続だと報告する
+    vi.mocked(execSync).mockImplementation(((cmd: string) =>
+      cmd.includes('diskutil')
+        ? '   Protocol:                  SMB\n'
+        : '/dev/disk3s1s1 on / (apfs, local)\n') as any);
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(0);

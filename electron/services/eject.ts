@@ -11,6 +11,7 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import { isMtpPath, mtpDisconnect } from './mtp';
 import { markDeviceEjected } from './device';
+import { isNetworkVolume } from './volumeInfo';
 
 /**
  * diskutil の絶対パス。GUI から起動された Electron アプリの PATH は最小限で
@@ -117,6 +118,15 @@ async function ejectUsbVolume(mountPath: string): Promise<EjectResult> {
   const normalized = normalizeMountPath(mountPath);
   const invalid = validateVolumePath(normalized, mountPath);
   if (invalid) return { success: false, message: invalid };
+
+  // ネットワークマウントは diskutil eject では外せない（本来デバイス一覧にも出ない）
+  if (isNetworkVolume(normalized)) {
+    return {
+      success: false,
+      message:
+        'ネットワークボリュームは取り出せません。Finder のサイドバーから接続を解除してください。',
+    };
+  }
 
   const wholeDisk = await resolveWholeDisk(normalized);
 

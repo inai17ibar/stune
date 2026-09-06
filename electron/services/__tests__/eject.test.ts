@@ -14,10 +14,15 @@ vi.mock('../device', () => ({
   markDeviceEjected: vi.fn(),
 }));
 
+vi.mock('../volumeInfo', () => ({
+  isNetworkVolume: vi.fn(() => false),
+}));
+
 import { ejectDevice } from '../eject';
 import { execFile } from 'child_process';
 import { mtpDisconnect } from '../mtp';
 import { markDeviceEjected } from '../device';
+import { isNetworkVolume } from '../volumeInfo';
 
 type ExecResult = { error?: Error; stdout?: string; stderr?: string };
 
@@ -46,6 +51,7 @@ const BUSY_OUTPUT =
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(isNetworkVolume).mockReturnValue(false);
 });
 
 describe('ejectDevice — USB volume', () => {
@@ -167,6 +173,20 @@ describe('ejectDevice — USB volume', () => {
     expect(calls.filter((c) => c[0] === 'eject')).toEqual([
       ['eject', '/Volumes/WALKMAN'],
     ]);
+  });
+});
+
+describe('ejectDevice — network volume', () => {
+  it('refuses a network mount instead of running diskutil eject', async () => {
+    mockDiskutil(() => ({ stdout: 'ok' }));
+    vi.mocked(isNetworkVolume).mockReturnValue(true);
+
+    const result = await ejectDevice('/Volumes/NAS_Share');
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('ネットワークボリュームは取り出せません');
+    expect(execFile).not.toHaveBeenCalled();
+    expect(markDeviceEjected).not.toHaveBeenCalled();
   });
 });
 
