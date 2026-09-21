@@ -8,6 +8,7 @@ import { copyTracks } from './services/transfer';
 import { sanitizePathSegment, buildTransferFileName, computeSyncPlan } from './services/syncDiff';
 import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
 import { readTrackMetadata } from './services/metadata';
+import { importFilesIntoDb } from './services/importFiles';
 import {
   loadLibraryDb,
   saveLibraryDb,
@@ -576,66 +577,19 @@ ipcMain.handle('import-to-library', async () => {
     libraryDb = await loadLibraryDb();
   }
 
-  const managedDir = libraryDb.masterFolder;
-  const total = result.filePaths.length;
-  let imported = 0;
-  const errors: string[] = [];
-
-  for (const sourcePath of result.filePaths) {
-    const fileName = path.basename(sourcePath);
-    if (mainWindow) {
-      mainWindow.webContents.send('scan-progress', { current: imported, total });
-    }
-
-    try {
-      // Read metadata to determine Artist/Album
-      const meta = await readTrackMetadata(sourcePath);
-      const artist = (meta.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
-      const album = (meta.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
-
-      const destDir = path.join(managedDir, artist, album);
-      await fs.promises.mkdir(destDir, { recursive: true });
-      const destPath = path.join(destDir, fileName);
-
-      // Don't overwrite existing files
-      try {
-        await fs.promises.access(destPath);
-        // File already exists, skip
-      } catch {
-        await fs.promises.copyFile(sourcePath, destPath);
+  const { imported, skipped, errors } = await importFilesIntoDb(
+    libraryDb,
+    result.filePaths,
+    (current, total) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('scan-progress', { current, total });
       }
-
-      // Read metadata for the destination file and add to DB
-      const destMeta = await readTrackMetadata(destPath);
-      const stats = await fs.promises.stat(destPath);
-      libraryDb.tracks[destPath] = {
-        ...destMeta,
-        lastModified: stats.mtimeMs,
-        dateAdded: new Date().toISOString(),
-        rating: 0,
-        playCount: 0,
-        favorite: false,
-        tags: [],
-        comment: '',
-      };
-      imported++;
-    } catch (err: any) {
-      errors.push(`${fileName}: ${err.message}`);
     }
-  }
-
-  // Add managed dir as a library path if not already present
-  if (!libraryDb.libraryPaths.includes(managedDir)) {
-    libraryDb.libraryPaths.push(managedDir);
-  }
+  );
 
   await saveLibraryDb(libraryDb);
 
-  if (mainWindow) {
-    mainWindow.webContents.send('scan-progress', { current: total, total });
-  }
-
-  return { library: dbToLibrary(libraryDb), imported, errors };
+  return { library: dbToLibrary(libraryDb), imported, skipped, errors };
 });
 
 // Import files by paths (for drag & drop - no dialog)
@@ -645,7 +599,6 @@ ipcMain.handle('import-files-by-path', async (_event, filePaths: string[]) => {
   }
 
   const AUDIO_EXTS = new Set(['.mp3', '.flac', '.wav', '.aac', '.m4a', '.aiff', '.aif', '.ogg', '.wma', '.dsf', '.dff', '.opus']);
-  const managedDir = libraryDb.masterFolder;
   let imported = 0;
   const errors: string[] = [];
 
@@ -673,57 +626,22 @@ ipcMain.handle('import-files-by-path', async (_event, filePaths: string[]) => {
   }
 
   // Import individual files to managed folder
-  const total = files.length;
-  for (const sourcePath of files) {
-    const fileName = path.basename(sourcePath);
+  const fileResult = await importFilesIntoDb(libraryDb, files, (current, total) => {
     if (mainWindow) {
-      mainWindow.webContents.send('scan-progress', { current: imported, total });
+      mainWindow.webContents.send('scan-progress', { current, total });
     }
-
-    try {
-      const meta = await readTrackMetadata(sourcePath);
-      const artist = (meta.artist || 'Unknown Artist').replace(/[/\\:*?"<>|]/g, '_');
-      const album = (meta.album || 'Unknown Album').replace(/[/\\:*?"<>|]/g, '_');
-
-      const destDir = path.join(managedDir, artist, album);
-      await fs.promises.mkdir(destDir, { recursive: true });
-      const destPath = path.join(destDir, fileName);
-
-      try {
-        await fs.promises.access(destPath);
-      } catch {
-        await fs.promises.copyFile(sourcePath, destPath);
-      }
-
-      const destMeta = await readTrackMetadata(destPath);
-      const stats = await fs.promises.stat(destPath);
-      libraryDb.tracks[destPath] = {
-        ...destMeta,
-        lastModified: stats.mtimeMs,
-        dateAdded: new Date().toISOString(),
-        rating: 0,
-        playCount: 0,
-        favorite: false,
-        tags: [],
-        comment: '',
-      };
-      imported++;
-    } catch (err: any) {
-      errors.push(`${fileName}: ${err.message}`);
-    }
-  }
-
-  if (files.length > 0 && !libraryDb.libraryPaths.includes(managedDir)) {
-    libraryDb.libraryPaths.push(managedDir);
-  }
+  });
+  imported += fileResult.imported;
+  errors.push(...fileResult.errors);
 
   await saveLibraryDb(libraryDb);
 
-  if (mainWindow) {
-    mainWindow.webContents.send('scan-progress', { current: total, total });
-  }
-
-  return { library: dbToLibrary(libraryDb), imported: imported + dirs.length, errors };
+  return {
+    library: dbToLibrary(libraryDb),
+    imported: imported + dirs.length,
+    skipped: fileResult.skipped,
+    errors,
+  };
 });
 
 // Get disk usage for a path
