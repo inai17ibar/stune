@@ -435,14 +435,23 @@ export async function mtpUpload(
   const storageId = getStorageIdFromMtpPath(mountPath);
   const total = localPaths.length;
   for (let i = 0; i < localPaths.length; i++) {
-    onProgress?.(i + 1, total, localPaths[i]);
+    // 転送「開始」の通知は完了数 i のまま送る。i + 1 を送ると最後のファイルの
+    // 開始時点で 100% = completed と表示され、転送中にケーブルを抜かれかねない。
+    onProgress?.(i, total, localPaths[i]);
     const res = await runMtpCommand<{ error?: string }>({
       cmd: 'upload',
       storageId,
       source: localPaths[i],
       destination: destinationDir,
     });
-    if (res?.error) return { success: false, error: res.error };
+    // runMtpCommand はバイナリ未検出・spawn 失敗・終了コード非 0・タイムアウト・
+    // JSON 解析失敗のいずれでも null を返す。null を無視すると 1 バイトも転送
+    // していないのに success: true を返してしまう。
+    if (!res) {
+      return { success: false, error: `MTP upload failed: no response (${path.basename(localPaths[i])})` };
+    }
+    if (res.error) return { success: false, error: res.error };
+    onProgress?.(i + 1, total, localPaths[i]);
   }
   return { success: true };
 }
