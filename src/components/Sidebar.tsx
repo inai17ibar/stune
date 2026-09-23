@@ -66,7 +66,9 @@ export default function Sidebar() {
       if (result) {
         setLibrary(result.library);
         if (result.errors.length > 0) {
-          showError(`${result.imported} files imported, ${result.errors.length} errors`);
+          showError(
+            `${result.imported} files imported, ${result.skipped} already in library, ${result.errors.length} errors`
+          );
         }
       }
     } catch (err: any) {
@@ -177,7 +179,9 @@ export default function Sidebar() {
       setLibrary(result.library);
       setViewMode('library');
       if (result.errors.length > 0) {
-        showError(`${result.imported} imported, ${result.errors.length} errors`);
+        showError(
+          `${result.imported} imported, ${result.skipped} already in library, ${result.errors.length} errors`
+        );
       }
     } catch (err: any) {
       console.error('Drop import failed:', err);

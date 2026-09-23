@@ -40,8 +40,8 @@ interface STuneAPI {
   mtpGetDevices: () => Promise<any[]>;
 
   // Import
-  importToLibrary: () => Promise<{ library: any; imported: number; errors: string[] } | null>;
-  importFilesByPath: (filePaths: string[]) => Promise<{ library: any; imported: number; errors: string[] }>;
+  importToLibrary: () => Promise<{ library: any; imported: number; skipped: number; errors: string[] } | null>;
+  importFilesByPath: (filePaths: string[]) => Promise<{ library: any; imported: number; skipped: number; errors: string[] }>;
 
   // Sync
   computeSyncPlan: (deviceMountPath: string) => Promise<{
