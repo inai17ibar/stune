@@ -8,6 +8,7 @@ import { copyTracks } from './services/transfer';
 import { sanitizePathSegment, buildTransferFileName, computeSyncPlan } from './services/syncDiff';
 import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
 import { readTrackMetadata } from './services/metadata';
+import { assertPathInside, isDevicePathInside } from './services/pathGuard';
 import { importFilesIntoDb } from './services/importFiles';
 import {
   loadLibraryDb,
@@ -263,6 +264,10 @@ ipcMain.handle(
       try {
         if (isMtp) {
           const destDir = `/MUSIC/${artist}/${album}`;
+          // Tags must not steer the upload out of the device MUSIC folder.
+          if (!isDevicePathInside('/MUSIC', destDir)) {
+            throw new Error(`refusing to upload outside /MUSIC: ${destDir}`);
+          }
           // For MTP, create a symlink with the desired filename so mtp-cli uses it
           const symlinkPath = path.join(tmpDir, destFileName);
           try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
@@ -276,9 +281,14 @@ ipcMain.handle(
           }
         } else {
           // USB mount: create directory and copy file with prefixed name
-          const destDir = path.join(args.deviceMountPath, 'MUSIC', artist, album);
-          await fs.promises.mkdir(destDir, { recursive: true });
+          const musicRoot = path.join(args.deviceMountPath, 'MUSIC');
+          const destDir = path.join(musicRoot, artist, album);
           const destPath = path.join(destDir, destFileName);
+          // Tags must not steer the copy out of the device MUSIC folder — that
+          // would write onto the Mac (e.g. /Volumes) and never show up in the
+          // sync diff, so the track would be re-transferred forever.
+          assertPathInside(musicRoot, destPath);
+          await fs.promises.mkdir(destDir, { recursive: true });
           await fs.promises.copyFile(filePath, destPath);
         }
       } catch (err: any) {

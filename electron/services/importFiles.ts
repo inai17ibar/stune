@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readTrackMetadata } from './metadata';
 import { sanitizePathSegment } from './syncDiff';
+import { assertPathInside } from './pathGuard';
 import type { LibraryDatabase, TrackRecord } from './libraryDb';
 
 export interface ImportResult {
@@ -70,8 +71,11 @@ export async function importFilesIntoDb(
       const album = sanitizePathSegment(meta.album || 'Unknown Album');
 
       const destDir = path.join(managedDir, artist, album);
-      await fs.promises.mkdir(destDir, { recursive: true });
       const destPath = path.join(destDir, fileName);
+      // Never create or write anything outside the master folder, whatever the
+      // tags say. Throwing records this file in `errors` and skips it.
+      assertPathInside(managedDir, destPath);
+      await fs.promises.mkdir(destDir, { recursive: true });
 
       // Don't overwrite existing files
       let alreadyExists = true;
