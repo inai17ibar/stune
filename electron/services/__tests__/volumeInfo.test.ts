@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('child_process', () => ({
   execSync: vi.fn(() => ''),
+  execFileSync: vi.fn(() => ''),
 }));
 
 import {
@@ -11,7 +12,7 @@ import {
   isNetworkVolume,
   readMountTable,
 } from '../volumeInfo';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 // macOS 15 の実際の `/sbin/mount` 出力
 const REAL_MOUNT_OUTPUT = [
@@ -27,6 +28,7 @@ const REAL_MOUNT_OUTPUT = [
 
 beforeEach(() => {
   vi.mocked(execSync).mockReturnValue('' as any);
+  vi.mocked(execFileSync).mockReturnValue('' as any);
 });
 
 describe('parseMountTable', () => {
@@ -45,6 +47,14 @@ describe('parseMountTable', () => {
     );
 
     expect(table.get('/Volumes/SD CARD')).toBe('exfat');
+  });
+
+  it('handles mount points containing " (" (volume names with parentheses)', () => {
+    const table = parseMountTable(
+      '/dev/disk5s1 on /Volumes/WALKMAN (X) (msdos, local)'
+    );
+
+    expect(table.get('/Volumes/WALKMAN (X)')).toBe('msdos');
   });
 
   it('ignores lines that are not mount entries', () => {
@@ -144,14 +154,30 @@ describe('isNetworkVolume', () => {
   });
 
   it('falls back to diskutil for a path missing from the mount table', () => {
-    vi.mocked(execSync).mockImplementation(((cmd: string) =>
-      cmd.includes('diskutil') ? '   Protocol:  SMB\n' : '') as any);
+    vi.mocked(execFileSync).mockReturnValue('   Protocol:  SMB\n' as any);
 
     expect(isNetworkVolume('/Volumes/ghost')).toBe(true);
   });
 
+  it('runs diskutil without a shell, passing the path as an argument', () => {
+    // シェル経由だとボリューム名の $(...) がコマンド置換として実行される
+    const mountPath = '/Volumes/WALKMAN ($(touch /tmp/pwned))';
+    vi.mocked(execSync).mockClear();
+    vi.mocked(execFileSync).mockClear();
+
+    isNetworkVolume(mountPath, new Map());
+
+    expect(vi.mocked(execSync)).not.toHaveBeenCalled();
+    const [binary, args] = vi.mocked(execFileSync).mock.calls[0];
+    expect(binary).toBe('/usr/sbin/diskutil');
+    expect(args).toEqual(['info', mountPath]);
+  });
+
   it('does not exclude a volume when neither mount nor diskutil knows it', () => {
     vi.mocked(execSync).mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('ENOENT');
     });
 
