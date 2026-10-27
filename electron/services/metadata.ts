@@ -36,11 +36,28 @@ export function isSupportedAudioFile(filePath: string): boolean {
   return SUPPORTED_EXTENSIONS.has(ext);
 }
 
+// 1 ファイルのメタデータ読み取りに許す上限時間。細工されたファイルでパーサが
+// 非同期に止まっても、スキャン全体を巻き込まずに既定値へフォールバックする。
+// 注: 同期的な無限ループはイベントループを塞ぐためこれでは中断できない。
+// そこは music-metadata 側の修正（11.16.0+）に依存している。
+const PARSE_TIMEOUT_MS = 15000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, filePath: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Metadata read timed out after ${ms}ms: ${filePath}`)),
+      ms
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
 export async function readTrackMetadata(filePath: string): Promise<any> {
   try {
     const stats = await fs.promises.stat(filePath);
     const mmLib = await getMusicMetadata();
-    const metadata = await mmLib.parseFile(filePath);
+    const metadata = await withTimeout(mmLib.parseFile(filePath), PARSE_TIMEOUT_MS, filePath);
     const { common, format } = metadata;
 
     let coverArt: string | null = null;
