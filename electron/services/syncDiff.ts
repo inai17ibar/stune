@@ -28,8 +28,24 @@ export interface SyncPlan<L extends SyncTrack = SyncTrack, D extends SyncTrack =
   matched: Array<{ library: L; device: D }>;
 }
 
+/** Stand-in for a tag whose sanitized form cannot be used as a directory name. */
+const UNSAFE_SEGMENT_PLACEHOLDER = '_';
+
+/**
+ * Make an arbitrary tag value usable as a single path segment.
+ *
+ * Besides the characters that are illegal in a filename, segments that are
+ * empty or consist only of dots must be rejected: `path.join` resolves `.`
+ * and `..`, so a track whose ARTIST tag is `..` would otherwise be written
+ * one level *above* the master folder (or above the device MUSIC folder).
+ * Surrounding whitespace is ignored when making that judgement so ` .. `
+ * cannot sneak through.
+ */
 export function sanitizePathSegment(name: string): string {
-  return name.replace(/[/\\:*?"<>|]/g, '_');
+  const replaced = name.replace(/[/\\:*?"<>|]/g, '_');
+  const trimmed = replaced.trim();
+  if (trimmed === '' || /^\.+$/.test(trimmed)) return UNSAFE_SEGMENT_PLACEHOLDER;
+  return replaced;
 }
 
 /**
