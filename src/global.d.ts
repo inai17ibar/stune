@@ -1,6 +1,5 @@
 interface STuneAPI {
   selectLibraryFolder: () => Promise<string | null>;
-  scanLibrary: (folderPath: string) => Promise<any>;
 
   // Library DB (persistent JSON storage)
   loadLibraryDb: () => Promise<any | null>;
@@ -59,9 +58,6 @@ interface STuneAPI {
     sourcePaths: string[],
     deviceMountPath: string
   ) => Promise<{ success: boolean; copiedCount: number; errors: string[] }>;
-  deleteTracks: (
-    filePaths: string[]
-  ) => Promise<{ path: string; success: boolean; error?: string }[]>;
   deleteLibraryTracks: (
     filePaths: string[],
     fromDisk: boolean
@@ -70,12 +66,6 @@ interface STuneAPI {
     mountPath: string,
     filePaths: string[]
   ) => Promise<{ success: boolean; deletedCount: number; errors: string[]; device: any }>;
-
-  // Metadata
-  readMetadata: (filePath: string) => Promise<any>;
-
-  // Utilities
-  showInFinder: (filePath: string) => Promise<void>;
 
   // Event listeners
   onDevicesChanged: (callback: (devices: any[]) => void) => () => void;
