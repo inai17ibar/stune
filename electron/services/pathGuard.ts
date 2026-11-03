@@ -36,7 +36,7 @@ export function assertPathInside(parentDir: string, candidate: string): void {
 export function isDevicePathInside(root: string, candidate: string): boolean {
   const normalizedRoot = path.posix.resolve(root);
   const normalizedChild = path.posix.resolve(candidate);
-  if (normalizedChild === normalizedRoot) return true;
+  if (normalizedChild === normalizedRoot) return false;
   return normalizedChild.startsWith(
     normalizedRoot.endsWith('/') ? normalizedRoot : normalizedRoot + '/'
   );

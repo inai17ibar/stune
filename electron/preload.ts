@@ -3,8 +3,6 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('stune', {
   // Library
   selectLibraryFolder: () => ipcRenderer.invoke('select-library-folder'),
-  scanLibrary: (folderPath: string) =>
-    ipcRenderer.invoke('scan-library', folderPath),
 
   // Library DB (persistent JSON storage)
   loadLibraryDb: () => ipcRenderer.invoke('load-library-db'),
@@ -59,20 +57,10 @@ contextBridge.exposeInMainWorld('stune', {
     ipcRenderer.invoke('copy-tracks', { sourcePaths, destinationDir }),
   copyTracksStructured: (sourcePaths: string[], deviceMountPath: string) =>
     ipcRenderer.invoke('copy-tracks-structured', { sourcePaths, deviceMountPath }),
-  deleteTracks: (filePaths: string[]) =>
-    ipcRenderer.invoke('delete-tracks', filePaths),
   deleteLibraryTracks: (filePaths: string[], fromDisk: boolean) =>
     ipcRenderer.invoke('delete-library-tracks', { filePaths, fromDisk }),
   deleteDeviceTracks: (mountPath: string, filePaths: string[]) =>
     ipcRenderer.invoke('delete-device-tracks', { mountPath, filePaths }),
-
-  // Metadata
-  readMetadata: (filePath: string) =>
-    ipcRenderer.invoke('read-metadata', filePath),
-
-  // Utilities
-  showInFinder: (filePath: string) =>
-    ipcRenderer.invoke('show-in-finder', filePath),
 
   // Event listeners
   onDevicesChanged: (callback: (devices: any[]) => void) => {
