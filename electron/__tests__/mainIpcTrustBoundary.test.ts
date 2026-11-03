@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   db: { version: 1, libraryPaths: [] as string[], masterFolder: '', lastScanned: '', tracks: {} as Record<string, any> },
   devices: [] as any[],
   save: vi.fn(),
+  upload: vi.fn(async (..._args: any[]) => ({ success: true })),
 }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, whenReady: () => Promise.resolve(), on: vi.fn(), getPath: () => os.tmpdir() },
@@ -25,6 +26,10 @@ vi.mock('../services/device', () => ({ watchDevices: vi.fn(), getConnectedWalkma
 vi.mock('../services/libraryDb', () => ({
   loadLibraryDb: async () => state.db, saveLibraryDb: (...args: any[]) => state.save(...args),
   dbToLibrary: (db: any) => db, scanFolderIntoDb: vi.fn(), removeFolderFromDb: vi.fn(), updateTrackCustomMeta: vi.fn(),
+}));
+vi.mock('../services/mtp', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/mtp')>(),
+  mtpUpload: (...args: any[]) => state.upload(...args),
 }));
 beforeAll(async () => { await import('../main'); });
 const event = () => ({ sender: state.contents, senderFrame: state.frame });
@@ -86,6 +91,32 @@ describe('registered main IPC handlers', () => {
       state.devices = [];
       await fs.rm(mount, { recursive: true, force: true });
       await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+  it.each(['..', ' .. ', '../../escape', 'Normal Artist'])('keeps USB and MTP structured transfers contained for %j tags', async (tag) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'stune-transfer-'));
+    try {
+      const source = path.join(dir, 'song.mp3');
+      await fs.writeFile(source, 'audio');
+      state.db.tracks[source] = { filePath: source, artist: tag, album: tag };
+      const handler = state.handlers.get('copy-tracks-structured')!;
+      const usb = await handler(event(), { sourcePaths: [source], deviceMountPath: dir });
+      expect(usb.errors).toEqual([]);
+      const { buildExpectedDevicePath } = await import('../services/syncDiff');
+      const relative = buildExpectedDevicePath({ ...state.db.tracks[source], fileName: 'song.mp3' });
+      const destination = path.join(dir, 'MUSIC', relative);
+      const fromRoot = path.relative(path.join(dir, 'MUSIC'), destination);
+      expect(fromRoot === '..' || fromRoot.startsWith('..' + path.sep) || path.isAbsolute(fromRoot)).toBe(false);
+      expect(await fs.readFile(destination, 'utf8')).toBe('audio');
+      state.upload.mockClear();
+      const mtp = await handler(event(), { sourcePaths: [source], deviceMountPath: 'mtp://storage' });
+      expect(mtp.errors).toEqual([]);
+      expect(state.upload).toHaveBeenCalledTimes(1);
+      expect(state.upload.mock.calls[0][2]).toBe('/MUSIC/' + relative.split('/').slice(0, -1).join('/'));
+      expect(await fs.readFile(source, 'utf8')).toBe('audio');
+    } finally {
+      delete state.db.tracks[path.join(dir, 'song.mp3')];
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
   it('cannot use device deletion with an arbitrary filesystem root', async () => {
