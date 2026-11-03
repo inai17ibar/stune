@@ -228,7 +228,9 @@ export async function scanFolderIntoDb(
   }
 
   const audioFiles = await walkDirectory(folderPath);
-  const batchSize = 20;
+  // Kept low on purpose: a single malformed file can make the parser allocate
+  // far more than its file size, and the batch multiplies that by batchSize.
+  const batchSize = 4;
   let processed = 0;
 
   for (let i = 0; i < audioFiles.length; i += batchSize) {

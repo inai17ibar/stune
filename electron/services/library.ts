@@ -56,8 +56,10 @@ function groupIntoAlbums(tracks: any[]): any[] {
 export async function scanLibrary(folderPath: string): Promise<any> {
   const audioFiles = await walkDirectory(folderPath);
 
-  // Process files in batches to avoid memory pressure
-  const batchSize = 20;
+  // Process files in batches to avoid memory pressure.
+  // Kept low on purpose: a single malformed file can make the parser allocate
+  // far more than its file size, and the batch multiplies that by batchSize.
+  const batchSize = 4;
   const tracks: any[] = [];
 
   for (let i = 0; i < audioFiles.length; i += batchSize) {
