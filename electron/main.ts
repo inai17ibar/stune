@@ -1,13 +1,15 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, session, protocol, net } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { scanLibrary, scanDevice } from './services/library';
+import { scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices, refreshDevices } from './services/device';
 import { ejectDevice } from './services/eject';
 import { copyTracks } from './services/transfer';
 import { sanitizePathSegment, buildTransferFileName, computeSyncPlan } from './services/syncDiff';
 import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
-import { readTrackMetadata } from './services/metadata';
+import { deleteLibraryTracks, validateAudioDeletion, validateMtpDeletion, isWithin } from './services/fileDeletion';
+import { secureWebContents, isAppDocument } from './services/windowSecurity';
+import { pathToFileURL } from 'url';
 import { importFilesIntoDb } from './services/importFiles';
 import {
   loadLibraryDb,
@@ -43,6 +45,8 @@ function createWindow() {
     },
   });
 
+  secureWebContents(mainWindow.webContents, (url) => shell.openExternal(url));
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
   } else {
@@ -56,15 +60,6 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-  });
-
-  // 外部リンク（target="_blank" 等）はシステムのブラウザで開く
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url);
-      return { action: 'deny' };
-    }
-    return { action: 'allow' };
   });
 }
 
@@ -100,10 +95,22 @@ app.on('activate', () => {
   }
 });
 
+function handleTrusted(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any) {
+  ipcMain.handle(channel, (event, ...args) => {
+    const appUrl = isDev ? 'http://localhost:5173/' : pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
+    if (!mainWindow || event.sender !== mainWindow.webContents ||
+        event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isAppDocument(event.senderFrame.url, appUrl)) {
+      throw new Error('Untrusted IPC sender');
+    }
+    return handler(event, ...args);
+  });
+}
+
 // ===== IPC Handlers =====
 
 // Select a folder for the music library
-ipcMain.handle('select-library-folder', async () => {
+handleTrusted('select-library-folder', async () => {
   if (!mainWindow) return null;
   const defaultMusicPath = path.join(app.getPath('home'), 'Music');
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -116,27 +123,22 @@ ipcMain.handle('select-library-folder', async () => {
   return result.filePaths[0];
 });
 
-// Scan a folder and return all music tracks
-ipcMain.handle('scan-library', async (_event, folderPath: string) => {
-  return await scanLibrary(folderPath);
-});
-
 // Get connected Walkman devices
-ipcMain.handle('get-devices', async () => {
+handleTrusted('get-devices', async () => {
   return await getConnectedWalkman();
 });
 
 // MTP 用 mtp-cli が利用可能か（サイドバーで表示用）
-ipcMain.handle('is-mtp-cli-available', () => isMtpCliAvailable());
+handleTrusted('is-mtp-cli-available', () => isMtpCliAvailable());
 
 // Scan a specific Walkman device（USB マウント or MTP）
-ipcMain.handle('scan-device', async (_event, mountPath: string) => {
+handleTrusted('scan-device', async (_event, mountPath: string) => {
   if (isMtpPath(mountPath)) return await scanMtpDevice(mountPath);
   return await scanDevice(mountPath);
 });
 
 // Compute a sync plan: diff the library against a device's current contents
-ipcMain.handle('compute-sync-plan', async (_event, deviceMountPath: string) => {
+handleTrusted('compute-sync-plan', async (_event, deviceMountPath: string) => {
   if (!libraryDb) {
     libraryDb = await loadLibraryDb();
   }
@@ -168,7 +170,7 @@ ipcMain.handle('compute-sync-plan', async (_event, deviceMountPath: string) => {
 });
 
 // Copy tracks from source to destination（USB または MTP へ）
-ipcMain.handle(
+handleTrusted(
   'copy-tracks',
   async (_event, args: { sourcePaths: string[]; destinationDir: string }) => {
     if (isMtpPath(args.destinationDir)) {
@@ -218,7 +220,7 @@ ipcMain.handle(
 );
 
 // Copy tracks to device with Artist/Album directory structure
-ipcMain.handle(
+handleTrusted(
   'copy-tracks-structured',
   async (_event, args: { sourcePaths: string[]; deviceMountPath: string }) => {
     if (!libraryDb) {
@@ -308,21 +310,17 @@ ipcMain.handle(
 );
 
 // Delete tracks from a device (USB or MTP), then rescan to update the view
-ipcMain.handle(
+handleTrusted(
   'delete-device-tracks',
   async (_event, args: { mountPath: string; filePaths: string[] }) => {
+    if (!args || typeof args.mountPath !== 'string' || !Array.isArray(args.filePaths) ||
+        !args.filePaths.every((file) => typeof file === 'string')) throw new Error('Invalid deletion request');
+    const devices = await getConnectedWalkman();
+    if (!devices.some((device) => device.mountPath === args.mountPath)) throw new Error('Unknown device');
     // MTP device
     if (isMtpPath(args.mountPath)) {
       const storageId = args.mountPath.replace('mtp://', '').split('/')[0];
-      // Convert full virtual paths to MTP-relative paths
-      const mtpPaths = args.filePaths.map((fp) => {
-        // filePaths may be "mtp://0/MUSIC/Artist/Album/track.flac" or just "/MUSIC/..."
-        if (fp.startsWith('mtp://')) {
-          const rest = fp.slice(fp.indexOf('/', 6)); // skip "mtp://X"
-          return rest || fp;
-        }
-        return fp;
-      });
+      const mtpPaths = args.filePaths.map((file) => validateMtpDeletion(args.mountPath, file));
       const result = await mtpDeleteFiles(storageId, mtpPaths);
       let device: any = null;
       try { device = await scanMtpDevice(args.mountPath); } catch { /* ignore */ }
@@ -338,17 +336,21 @@ ipcMain.handle(
     const errors: string[] = [];
     for (const filePath of args.filePaths) {
       try {
-        // Safety: only delete files that are actually on the device
-        if (!filePath.startsWith(args.mountPath)) {
-          errors.push(`${filePath}: not on device ${args.mountPath}`);
-          continue;
+        const musicRoots = ['MUSIC', 'Music', 'music'].map((name) => path.join(args.mountPath, name));
+        const canonicalMount = await fs.promises.realpath(args.mountPath);
+        const allowedRoots: string[] = [];
+        for (const root of musicRoots) {
+          try {
+            if (isWithin(canonicalMount, await fs.promises.realpath(root))) allowedRoots.push(root);
+          } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
         }
+        await validateAudioDeletion(filePath, allowedRoots);
         await fs.promises.unlink(filePath);
 
         // Clean up empty parent directories up to the MUSIC folder
         const musicRoot = path.join(args.mountPath, 'MUSIC');
         let dir = path.dirname(filePath);
-        while (dir.startsWith(musicRoot) && dir !== musicRoot) {
+        while (dir.startsWith(musicRoot + path.sep)) {
           const entries = await fs.promises.readdir(dir);
           if (entries.length === 0) {
             await fs.promises.rmdir(dir);
@@ -374,63 +376,25 @@ ipcMain.handle(
   }
 );
 
-// Read metadata for a single track
-ipcMain.handle('read-metadata', async (_event, filePath: string) => {
-  return await readTrackMetadata(filePath);
-});
-
-// Delete tracks (file system only — legacy)
-ipcMain.handle('delete-tracks', async (_event, filePaths: string[]) => {
-  const results: { path: string; success: boolean; error?: string }[] = [];
-  for (const filePath of filePaths) {
-    try {
-      await fs.promises.unlink(filePath);
-      results.push({ path: filePath, success: true });
-    } catch (err: any) {
-      results.push({ path: filePath, success: false, error: err.message });
-    }
-  }
-  return results;
-});
-
 // Delete tracks from the library DB, optionally also from disk, then return updated library
-ipcMain.handle(
+handleTrusted(
   'delete-library-tracks',
   async (_event, args: { filePaths: string[]; fromDisk: boolean }) => {
     if (!libraryDb) {
       libraryDb = await loadLibraryDb();
     }
-    const errors: string[] = [];
-
-    for (const filePath of args.filePaths) {
-      if (args.fromDisk) {
-        try {
-          await fs.promises.unlink(filePath);
-        } catch (err: any) {
-          // File might already be deleted — still remove from DB
-          if (err.code !== 'ENOENT') {
-            errors.push(`${path.basename(filePath)}: ${err.message}`);
-          }
-        }
-      }
-      delete libraryDb.tracks[filePath];
-    }
+    const { deletedCount, errors } = await deleteLibraryTracks(libraryDb, args.filePaths, args.fromDisk);
 
     await saveLibraryDb(libraryDb);
     const library = dbToLibrary(libraryDb);
-    return { library, deletedCount: args.filePaths.length - errors.length, errors };
+    return { library, deletedCount, errors };
   }
 );
-
-// Show file in Finder
-ipcMain.handle('show-in-finder', async (_event, filePath: string) => {
-  shell.showItemInFolder(filePath);
-});
 
 // ===== Library DB Handlers =====
 
 // Load the persistent library database
-ipcMain.handle('load-library-db', async () => {
+handleTrusted('load-library-db', async () => {
   libraryDb = await loadLibraryDb();
   if (Object.keys(libraryDb.tracks).length > 0) {
     return dbToLibrary(libraryDb);
@@ -439,7 +403,7 @@ ipcMain.handle('load-library-db', async () => {
 });
 
 // Add a folder to the library and scan it
-ipcMain.handle('add-library-folder', async (_event, folderPath: string) => {
+handleTrusted('add-library-folder', async (_event, folderPath: string) => {
   if (!libraryDb) {
     libraryDb = await loadLibraryDb();
   }
@@ -453,7 +417,7 @@ ipcMain.handle('add-library-folder', async (_event, folderPath: string) => {
 });
 
 // Rescan all library folders (incremental - only changed files)
-ipcMain.handle('rescan-library', async () => {
+handleTrusted('rescan-library', async () => {
   if (!libraryDb) {
     libraryDb = await loadLibraryDb();
   }
@@ -469,7 +433,7 @@ ipcMain.handle('rescan-library', async () => {
 });
 
 // Remove a folder from the library
-ipcMain.handle('remove-library-folder', async (_event, folderPath: string) => {
+handleTrusted('remove-library-folder', async (_event, folderPath: string) => {
   if (!libraryDb) {
     libraryDb = await loadLibraryDb();
   }
@@ -479,7 +443,7 @@ ipcMain.handle('remove-library-folder', async (_event, folderPath: string) => {
 });
 
 // Update custom metadata for a track (rating, tags, etc.)
-ipcMain.handle(
+handleTrusted(
   'update-track-meta',
   async (
     _event,
@@ -504,13 +468,13 @@ ipcMain.handle(
 );
 
 // Get the library DB file path (for debugging / export)
-ipcMain.handle('get-library-db-path', async () => {
+handleTrusted('get-library-db-path', async () => {
   const userDataPath = app.getPath('userData');
   return path.join(userDataPath, 'sTuneLibrary.json');
 });
 
 // Set master folder (iTunes-style managed library folder)
-ipcMain.handle('set-master-folder', async () => {
+handleTrusted('set-master-folder', async () => {
   if (!mainWindow) return null;
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory', 'createDirectory'],
@@ -532,12 +496,12 @@ ipcMain.handle('set-master-folder', async () => {
 });
 
 // Browse MTP device directory (filtered)
-ipcMain.handle('mtp-browse', async (_event, args: { storageId: string; path: string }) => {
+handleTrusted('mtp-browse', async (_event, args: { storageId: string; path: string }) => {
   return await mtpBrowse(args.storageId, args.path);
 });
 
 // Download file from MTP device to temp directory for playback
-ipcMain.handle('mtp-download-file', async (_event, args: { storageId: string; remotePath: string }) => {
+handleTrusted('mtp-download-file', async (_event, args: { storageId: string; remotePath: string }) => {
   const os = require('os');
   const tempDir = path.join(os.tmpdir(), 'stune-playback');
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
@@ -545,12 +509,12 @@ ipcMain.handle('mtp-download-file', async (_event, args: { storageId: string; re
 });
 
 // Get MTP device info with all storages
-ipcMain.handle('mtp-get-devices', async () => {
+handleTrusted('mtp-get-devices', async () => {
   return await getMtpDevices();
 });
 
 // Eject a device (USB: diskutil eject, MTP: セッション切断 + ケーブルを抜く案内)
-ipcMain.handle('eject-device', async (_event, mountPath: string) => {
+handleTrusted('eject-device', async (_event, mountPath: string) => {
   const result = await ejectDevice(mountPath);
   if (result.success) {
     // ポーリング（3 秒間隔）を待たずに一覧を再取得する。
@@ -561,7 +525,7 @@ ipcMain.handle('eject-device', async (_event, mountPath: string) => {
 });
 
 // Import files into library: select files, read metadata, copy to ~/Music/sTunes/Artist/Album/
-ipcMain.handle('import-to-library', async () => {
+handleTrusted('import-to-library', async () => {
   if (!mainWindow) return null;
 
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -593,7 +557,7 @@ ipcMain.handle('import-to-library', async () => {
 });
 
 // Import files by paths (for drag & drop - no dialog)
-ipcMain.handle('import-files-by-path', async (_event, filePaths: string[]) => {
+handleTrusted('import-files-by-path', async (_event, filePaths: string[]) => {
   if (!libraryDb) {
     libraryDb = await loadLibraryDb();
   }
@@ -645,7 +609,7 @@ ipcMain.handle('import-files-by-path', async (_event, filePaths: string[]) => {
 });
 
 // Get disk usage for a path
-ipcMain.handle('get-disk-usage', async (_event, mountPath: string) => {
+handleTrusted('get-disk-usage', async (_event, mountPath: string) => {
   try {
     const stats = await fs.promises.statfs(mountPath);
     return {
