@@ -63,6 +63,28 @@ describe('library deletion trust boundary', () => {
     await fs.unlink(file); register(file);
     expect((await deleteLibraryTracks(db, [file], true)).deletedCount).toBe(1);
   });
+  it('cleans registered tracks after album or artist directories are removed', async () => {
+    for (const removed of ['album', 'artist']) {
+      const artist = path.join(root, removed);
+      const album = path.join(artist, 'album');
+      await fs.mkdir(album, { recursive: true });
+      const file = path.join(album, 'song.mp3');
+      await fs.writeFile(file, 'audio'); register(file);
+      await fs.rm(removed === 'album' ? album : artist, { recursive: true });
+      expect(await deleteLibraryTracks(db, [file], true)).toEqual({ deletedCount: 1, errors: [] });
+      expect(db.tracks[file]).toBeUndefined();
+    }
+  });
+  it('rejects missing descendants of escaping or dangling symlink ancestors', async () => {
+    const outside = path.join(dir, 'outside'); await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(root, 'escape'));
+    await fs.symlink(path.join(dir, 'gone'), path.join(root, 'dangling'));
+    for (const name of ['escape', 'dangling']) {
+      const file = path.join(root, name, 'missing', 'album', 'song.mp3'); register(file);
+      expect((await deleteLibraryTracks(db, [file], true)).deletedCount).toBe(0);
+      expect(db.tracks[file]).toBeDefined();
+    }
+  });
   it('rejects malformed payloads', async () => {
     await expect(deleteLibraryTracks(db, 'path', true)).rejects.toThrow();
     await expect(deleteLibraryTracks(db, [1], true)).rejects.toThrow();

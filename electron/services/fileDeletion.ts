@@ -16,8 +16,19 @@ export async function validateAudioDeletion(file: string, roots: string[]): Prom
   const root = roots.find((r) => path.isAbsolute(r) && isWithin(path.resolve(r), file));
   if (!root) throw new Error('File is outside the allowed folders');
   const canonicalRoot = await fs.promises.realpath(root);
-  // Validate the parent even for missing files (DB cleanup must not bypass containment).
-  const canonicalParent = await fs.promises.realpath(path.dirname(file));
+  // Walk only genuinely missing components. An existing (including dangling)
+  // symlink must resolve successfully and stay inside the canonical root.
+  let ancestor = path.dirname(file);
+  while (ancestor !== root) {
+    try {
+      await fs.promises.lstat(ancestor);
+      break;
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') throw error;
+      ancestor = path.dirname(ancestor);
+    }
+  }
+  const canonicalParent = await fs.promises.realpath(ancestor);
   if (canonicalParent !== canonicalRoot && !isWithin(canonicalRoot, canonicalParent)) {
     throw new Error('File parent escapes the allowed folder');
   }

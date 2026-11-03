@@ -336,7 +336,7 @@ handleTrusted(
     const errors: string[] = [];
     for (const filePath of args.filePaths) {
       try {
-        const musicRoots = [path.join(args.mountPath, 'MUSIC'), path.join(args.mountPath, 'Music')];
+        const musicRoots = ['MUSIC', 'Music', 'music'].map((name) => path.join(args.mountPath, name));
         const canonicalMount = await fs.promises.realpath(args.mountPath);
         const allowedRoots: string[] = [];
         for (const root of musicRoots) {

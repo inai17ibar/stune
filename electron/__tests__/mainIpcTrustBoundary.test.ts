@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   frame: { url: 'http://localhost:5173/' },
   contents: null as any,
   db: { version: 1, libraryPaths: [] as string[], masterFolder: '', lastScanned: '', tracks: {} as Record<string, any> },
+  devices: [] as any[],
   save: vi.fn(),
 }));
 vi.mock('electron', () => ({
@@ -20,7 +21,7 @@ vi.mock('electron', () => ({
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
   shell: { openExternal: vi.fn() }, dialog: {}, session: {}, net: {},
 }));
-vi.mock('../services/device', () => ({ watchDevices: vi.fn(), getConnectedWalkman: async () => [], refreshDevices: vi.fn() }));
+vi.mock('../services/device', () => ({ watchDevices: vi.fn(), getConnectedWalkman: async () => state.devices, refreshDevices: vi.fn() }));
 vi.mock('../services/libraryDb', () => ({
   loadLibraryDb: async () => state.db, saveLibraryDb: (...args: any[]) => state.save(...args),
   dbToLibrary: (db: any) => db, scanFolderIntoDb: vi.fn(), removeFolderFromDb: vi.fn(), updateTrackCustomMeta: vi.fn(),
@@ -58,6 +59,34 @@ describe('registered main IPC handlers', () => {
     state.frame.url = 'file:///tmp/cover.html';
     try { expect(() => handler(event(), { filePaths: [], fromDisk: true })).toThrow('Untrusted IPC sender'); }
     finally { state.frame.url = 'http://localhost:5173/'; }
+  });
+  it('deletes lowercase USB music through IPC while rejecting traversal and symlink escapes', async () => {
+    const mount = await fs.mkdtemp(path.join(os.tmpdir(), 'stune-usb-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'stune-outside-'));
+    try {
+      state.devices = [{ mountPath: mount }];
+      const root = path.join(mount, 'music'); await fs.mkdir(root);
+      const song = path.join(root, 'song.mp3'); await fs.writeFile(song, 'audio');
+      const victim = path.join(outside, 'song.mp3'); await fs.writeFile(victim, 'keep');
+      await fs.symlink(outside, path.join(root, 'escape'));
+      await fs.symlink(victim, path.join(root, 'link.mp3'));
+      const handler = state.handlers.get('delete-device-tracks')!;
+      const result = await handler(event(), { mountPath: mount, filePaths: [song,
+        path.join(root, 'escape', 'song.mp3'), path.join(root, 'link.mp3'), root + '/../secret.mp3'] });
+      expect(result.deletedCount).toBe(1);
+      expect(result.errors).toHaveLength(3);
+      await expect(fs.stat(song)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readFile(victim, 'utf8')).toBe('keep');
+      await fs.rm(root, { recursive: true });
+      await fs.symlink(outside, root);
+      const escapedRoot = await handler(event(), { mountPath: mount, filePaths: [path.join(root, 'song.mp3')] });
+      expect(escapedRoot.deletedCount).toBe(0);
+      expect(await fs.readFile(victim, 'utf8')).toBe('keep');
+    } finally {
+      state.devices = [];
+      await fs.rm(mount, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
   it('cannot use device deletion with an arbitrary filesystem root', async () => {
     await expect(state.handlers.get('delete-device-tracks')!(event(), { mountPath: '/', filePaths: ['/tmp/private.mp3'] }))
