@@ -20,7 +20,8 @@ export default function Toolbar() {
 
   const handleCopyToDevice = () => {
     if (!activeDevice || selectedTracks.size === 0) return;
-    handleTransfer(activeDevice.musicPath);
+    // Fix #33: use structured copy so Artist/Album folders and track prefixes are preserved
+    handleTransferStructured(activeDevice.mountPath);
   };
 
   const handleCopyToLibrary = () => {
@@ -59,6 +60,46 @@ export default function Toolbar() {
         id: Date.now().toString(),
         source: '',
         destination: destinationDir,
+        tracks: [],
+        progress: 0,
+        currentFile: '',
+        status: 'error',
+        error: err.message,
+      });
+    }
+  };
+
+  const handleTransferStructured = async (deviceMountPath: string) => {
+    if (!window.stune) return;
+    const sourcePaths = Array.from(selectedTracks);
+
+    setTransferJob({
+      id: Date.now().toString(),
+      source: sourcePaths[0],
+      destination: deviceMountPath,
+      tracks: [],
+      progress: 0,
+      currentFile: '',
+      status: 'pending',
+    });
+
+    try {
+      const result = await window.stune.copyTracksStructured(sourcePaths, deviceMountPath);
+      setTransferJob({
+        id: Date.now().toString(),
+        source: '',
+        destination: deviceMountPath,
+        tracks: [],
+        progress: 100,
+        currentFile: '',
+        status: result.success ? 'completed' : 'error',
+        error: result.errors.join('\n'),
+      });
+    } catch (err: any) {
+      setTransferJob({
+        id: Date.now().toString(),
+        source: '',
+        destination: deviceMountPath,
         tracks: [],
         progress: 0,
         currentFile: '',

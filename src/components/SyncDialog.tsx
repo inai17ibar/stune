@@ -52,6 +52,19 @@ export default function SyncDialog({ mountPath, deviceName, onClose }: SyncDialo
 
   const handleTransfer = async () => {
     if (!window.stune || !plan || plan.toTransfer.length === 0) return;
+
+    // Fix #35: check free space before starting transfer
+    const freeSpace = activeDevice?.freeSpace ?? 0;
+    if (freeSpace > 0 && transferSize > freeSpace) {
+      const shortage = transferSize - freeSpace;
+      if (!confirm(
+        `転送サイズ (${formatSize(transferSize)}) が空き容量 (${formatSize(freeSpace)}) を ${formatSize(shortage)} 超えています。\n` +
+        `途中で失敗する可能性がありますが、続行しますか？`
+      )) {
+        return;
+      }
+    }
+
     const paths = plan.toTransfer.map((t) => t.filePath);
     // Hand progress display over to the global TransferDialog
     setTransferJob({
@@ -154,6 +167,11 @@ export default function SyncDialog({ mountPath, deviceName, onClose }: SyncDialo
               <div className="sync-section">
                 <div className="sync-section-title">
                   ライブラリ → 端末（{plan.toTransfer.length} 曲・{formatSize(transferSize)}）
+                  {activeDevice && transferSize > (activeDevice.freeSpace ?? 0) && (
+                    <span className="sync-warning" style={{ color: '#c0392b', marginLeft: '8px' }}>
+                      ⚠️ 空き容量不足 ({formatSize(activeDevice.freeSpace ?? 0)} 空き)
+                    </span>
+                  )}
                 </div>
                 <div className="sync-list">
                   {plan.toTransfer.map((t) => (
