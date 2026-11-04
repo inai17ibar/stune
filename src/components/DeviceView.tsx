@@ -237,7 +237,11 @@ export default function DeviceView() {
     setDeleting(true);
     setDeleteError(null);
     try {
-      const result = await window.stune.deleteDeviceTracks(activeDevice.mountPath, paths);
+      // Fix #31: use the currently selected storage, not the original activeDevice.mountPath
+      const targetMountPath = activeStorageId
+        ? `mtp://${activeStorageId}`
+        : activeDevice.mountPath;
+      const result = await window.stune.deleteDeviceTracks(targetMountPath, paths);
       if (!result.success) {
         setDeleteError(`削除に失敗: ${result.errors.join(', ')}`);
       }
@@ -699,13 +703,25 @@ export default function DeviceView() {
 
       {syncOpen && (
         <SyncDialog
-          mountPath={activeDevice.mountPath}
+          mountPath={activeStorageId ? `mtp://${activeStorageId}` : activeDevice.mountPath}
           deviceName={activeDevice.name}
           onClose={() => setSyncOpen(false)}
         />
       )}
 
-      <DiskUsageBar device={activeDevice} />
+      {/* Fix #32: show capacity of the currently selected storage */}
+      <DiskUsageBar
+        device={
+          currentStorage
+            ? {
+                ...activeDevice,
+                totalSpace: currentStorage.maxCapacity,
+                freeSpace: currentStorage.freeSpaceInBytes,
+                usedSpace: currentStorage.maxCapacity - currentStorage.freeSpaceInBytes,
+              }
+            : activeDevice
+        }
+      />
 
       {/* Storage tabs */}
       {mtpDevice && mtpDevice.storages.length > 1 && (

@@ -286,7 +286,8 @@ export async function scanMtpDevice(mountPath: string): Promise<{
   const storageId = getStorageIdFromMtpPath(mountPath);
   const dev = devices.find((d) => getStorageIdFromMtpPath(d.mountPath) === storageId);
   if (!dev) throw new Error('MTP device not found');
-  const storage = dev.storages[0];
+  // Fix #32: use the storage matching the requested storageId, not always storages[0]
+  const storage = dev.storages.find((s) => String(s.storageId) === storageId) || dev.storages[0];
   const totalSpace = storage?.maxCapacity ?? 0;
   const freeSpace = storage?.freeSpaceInBytes ?? 0;
   const usedSpace = totalSpace - freeSpace;
