@@ -32,6 +32,7 @@ import {
   type LibraryDatabase,
   type TrackRecord,
 } from '../libraryDb';
+import { readTrackMetadata } from '../metadata';
 
 // Helper to create a minimal track record
 function makeTrack(overrides: Partial<TrackRecord> = {}): TrackRecord {
@@ -577,4 +578,47 @@ describe('scanFolderIntoDb cleanup (#56)', () => {
     }
     expect(db.tracks[otherFolderTrack]).toBeDefined();
   });
+});
+
+describe('scanFolderIntoDb walkDirectory (#59)', () => {
+  it('scans a subfolder with over 125k files without RangeError', async () => {
+    const root = await fs.promises.mkdtemp('/tmp/stune-walk-test-');
+    try {
+      const sub = path.join(root, 'big');
+      await fs.promises.mkdir(sub);
+      const seed = path.join(sub, 'seed.mp3');
+      await fs.promises.writeFile(seed, '');
+      // Exceeds V8's spread argument limit (~125k): files.push(...subFiles)
+      // threw RangeError and aborted the whole scan before the fix.
+      const COUNT = 130_000;
+      for (let i = 0; i < COUNT; i++) {
+        fs.linkSync(seed, path.join(sub, `t${i}.mp3`));
+      }
+
+      vi.mocked(readTrackMetadata).mockResolvedValue({
+        filePath: '',
+        fileName: '',
+        title: 'T',
+        artist: 'A',
+        album: 'B',
+        albumArtist: 'A',
+        year: undefined,
+        trackNumber: undefined,
+        discNumber: undefined,
+        genre: '',
+        duration: 0,
+        bitrate: undefined,
+        sampleRate: undefined,
+        format: 'mp3',
+        fileSize: 0,
+        coverArt: null,
+      });
+
+      const db = makeDb({ libraryPaths: [root] });
+      await scanFolderIntoDb(db, root);
+      expect(Object.keys(db.tracks)).toHaveLength(COUNT + 1);
+    } finally {
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  }, 240_000);
 });
