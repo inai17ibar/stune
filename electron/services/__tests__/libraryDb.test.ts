@@ -586,13 +586,20 @@ describe('scanFolderIntoDb walkDirectory (#59)', () => {
     try {
       const sub = path.join(root, 'big');
       await fs.promises.mkdir(sub);
-      const seed = path.join(sub, 'seed.mp3');
-      await fs.promises.writeFile(seed, '');
       // Exceeds V8's spread argument limit (~125k): files.push(...subFiles)
       // threw RangeError and aborted the whole scan before the fix.
-      const COUNT = 130_000;
-      for (let i = 0; i < COUNT; i++) {
-        fs.linkSync(seed, path.join(sub, `t${i}.mp3`));
+      // Links are spread across many seed files: filesystems such as ext4
+      // cap hard links per inode at 65,000, so 130k links to ONE seed fail
+      // with EMLINK on CI runners even though the scan itself is fine.
+      const SEEDS = 130;
+      const LINKS_PER_SEED = 1_000;
+      const COUNT = SEEDS * LINKS_PER_SEED;
+      for (let s = 0; s < SEEDS; s++) {
+        const seed = path.join(sub, `seed${s}.mp3`);
+        await fs.promises.writeFile(seed, '');
+        for (let i = 0; i < LINKS_PER_SEED; i++) {
+          fs.linkSync(seed, path.join(sub, `t${s}_${i}.mp3`));
+        }
       }
 
       vi.mocked(readTrackMetadata).mockResolvedValue({
@@ -616,7 +623,7 @@ describe('scanFolderIntoDb walkDirectory (#59)', () => {
 
       const db = makeDb({ libraryPaths: [root] });
       await scanFolderIntoDb(db, root);
-      expect(Object.keys(db.tracks)).toHaveLength(COUNT + 1);
+      expect(Object.keys(db.tracks)).toHaveLength(COUNT + SEEDS);
     } finally {
       await fs.promises.rm(root, { recursive: true, force: true });
     }
