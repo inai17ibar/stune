@@ -283,10 +283,12 @@ export async function scanFolderIntoDb(
     onProgress?.(Math.min(processed, audioFiles.length), audioFiles.length);
   }
 
-  // Remove tracks that no longer exist on disk (only for this folder)
+  // Remove tracks that no longer exist on disk (only for this folder).
+  // Use a Set: scanning the array per track made this O(tracks × files) (#56).
+  const audioFileSet = new Set(audioFiles);
   for (const filePath of Object.keys(db.tracks)) {
     if (filePath.startsWith(folderPath)) {
-      if (!audioFiles.includes(filePath)) {
+      if (!audioFileSet.has(filePath)) {
         delete db.tracks[filePath];
       }
     }

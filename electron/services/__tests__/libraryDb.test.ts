@@ -27,6 +27,7 @@ import {
   saveLibraryDb,
   dbToLibrary,
   removeFolderFromDb,
+  scanFolderIntoDb,
   updateTrackCustomMeta,
   type LibraryDatabase,
   type TrackRecord,
@@ -532,5 +533,48 @@ describe('master folder integration', () => {
     const lib = dbToLibrary(db);
     expect(lib.masterFolder).toBe('/custom/path');
     expect(lib.tracks).toHaveLength(1);
+  });
+});
+
+describe('scanFolderIntoDb cleanup (#56)', () => {
+  let folder: string;
+
+  beforeEach(async () => {
+    folder = await fs.promises.mkdtemp('/tmp/stune-scan-test-');
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(folder, { recursive: true, force: true });
+  });
+
+  it('removes tracks whose files vanished, keeps existing and other-folder tracks', async () => {
+    const realPaths: string[] = [];
+    for (const name of ['a.mp3', 'b.mp3', 'c.mp3']) {
+      const p = path.join(folder, name);
+      await fs.promises.writeFile(p, '');
+      realPaths.push(p);
+    }
+
+    const db = makeDb({ libraryPaths: [folder] });
+    for (const p of realPaths) {
+      const stats = await fs.promises.stat(p);
+      // lastModified matches mtime so the scan skips re-reading metadata.
+      db.tracks[p] = makeTrack({ filePath: p, fileName: path.basename(p), lastModified: stats.mtimeMs });
+    }
+    const ghost1 = path.join(folder, 'gone1.mp3');
+    const ghost2 = path.join(folder, 'gone2.mp3');
+    db.tracks[ghost1] = makeTrack({ filePath: ghost1, fileName: 'gone1.mp3' });
+    db.tracks[ghost2] = makeTrack({ filePath: ghost2, fileName: 'gone2.mp3' });
+    const otherFolderTrack = '/other-library/keep.mp3';
+    db.tracks[otherFolderTrack] = makeTrack({ filePath: otherFolderTrack, fileName: 'keep.mp3' });
+
+    await scanFolderIntoDb(db, folder);
+
+    expect(db.tracks[ghost1]).toBeUndefined();
+    expect(db.tracks[ghost2]).toBeUndefined();
+    for (const p of realPaths) {
+      expect(db.tracks[p]).toBeDefined();
+    }
+    expect(db.tracks[otherFolderTrack]).toBeDefined();
   });
 });
