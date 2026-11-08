@@ -53,11 +53,54 @@ function withTimeout<T>(promise: Promise<T>, ms: number, filePath: string): Prom
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
 
+// 同時に走らせる parseFile の上限（呼び出し側のバッチサイズ 4 と同じ）。
+// タイムアウトしても parseFile 自体は止まらないため、スロットはタイムアウト時ではなく
+// パース Promise が settle した時点で解放する。これがないとタイムアウトした
+// パーサがバッチ枠を抜けたまま走り続け、同時実行数が際限なく増える。
+const MAX_CONCURRENT_PARSES = 4;
+let activeParses = 0;
+const parseQueue: Array<() => void> = [];
+
+function releaseParseSlot(): void {
+  const next = parseQueue.shift();
+  if (next) {
+    // スロットをそのまま次のタスクへ引き渡す（activeParses は据え置き）
+    next();
+  } else {
+    activeParses--;
+  }
+}
+
+export function runWithParseSlot<T>(task: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      let p: Promise<T>;
+      try {
+        p = Promise.resolve(task());
+      } catch (err) {
+        p = Promise.reject(err);
+      }
+      p.then(resolve, reject).finally(releaseParseSlot);
+    };
+    if (activeParses < MAX_CONCURRENT_PARSES) {
+      activeParses++;
+      start();
+    } else {
+      parseQueue.push(start);
+    }
+  });
+}
+
 export async function readTrackMetadata(filePath: string): Promise<any> {
   try {
     const stats = await fs.promises.stat(filePath);
     const mmLib = await getMusicMetadata();
-    const metadata = await withTimeout(mmLib.parseFile(filePath), PARSE_TIMEOUT_MS, filePath);
+    // スロットは生の parse Promise が settle するまで保持され、
+    // withTimeout は同じ Promise と競争する。
+    const parsePromise = runWithParseSlot(() => mmLib.parseFile(filePath));
+    // タイムアウト後に parse が reject しても unhandled rejection にしない
+    parsePromise.catch(() => {});
+    const metadata = await withTimeout(parsePromise, PARSE_TIMEOUT_MS, filePath);
     const { common, format } = metadata;
 
     let coverArt: string | null = null;
