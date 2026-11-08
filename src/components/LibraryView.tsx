@@ -1,34 +1,58 @@
-import { useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../stores/useStore';
 import type { TrackMetadata, Album } from '../types';
 
+const SEARCH_DEBOUNCE_MS = 200;
+
+/**
+ * Returns `value` once it has stopped changing for `delayMs`.
+ * An empty string is applied immediately so clearing the search feels instant.
+ */
+function useDebouncedValue(value: string, delayMs: number): string {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    if (value === '') {
+      setDebounced('');
+      return;
+    }
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 export default function LibraryView() {
-  const {
-    library,
-    setLibrary,
-    isScanning,
-    searchQuery,
-    sortKey,
-    sortOrder,
-    selectedTracks,
-    toggleTrackSelection,
-    clearSelection,
-    nowPlaying,
-    playAlbum,
-    setNowPlaying,
-    devices,
-    setTransferJob,
-  } = useStore();
+  // Granular selector subscriptions: this component re-renders only when one
+  // of these values changes, not on unrelated store updates.
+  const library = useStore((s) => s.library);
+  const isScanning = useStore((s) => s.isScanning);
+  const searchQuery = useStore((s) => s.searchQuery);
+  const sortKey = useStore((s) => s.sortKey);
+  const sortOrder = useStore((s) => s.sortOrder);
+  const selectedCount = useStore((s) => s.selectedTracks.size);
+  const nowPlayingPath = useStore((s) => s.nowPlaying?.filePath ?? null);
+  const devices = useStore((s) => s.devices);
+  const { setLibrary, clearSelection, playAlbum, setNowPlaying, setTransferJob } = useStore(
+    useShallow((s) => ({
+      setLibrary: s.setLibrary,
+      clearSelection: s.clearSelection,
+      playAlbum: s.playAlbum,
+      setNowPlaying: s.setNowPlaying,
+      setTransferJob: s.setTransferJob,
+    }))
+  );
   const [isTransferring, setIsTransferring] = useState(false);
   const [transferTarget, setTransferTarget] = useState(0);
   const [isDeleting, setIsDeleting] = useState(false);
+  const debouncedQuery = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
 
   const albumGroups = useMemo(() => {
     if (!library) return [];
     let albums = [...library.albums];
 
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedQuery) {
+      const q = debouncedQuery.toLowerCase();
       albums = albums
         .map((album) => ({
           ...album,
@@ -70,7 +94,86 @@ export default function LibraryView() {
     });
 
     return albums;
-  }, [library, searchQuery, sortKey, sortOrder]);
+  }, [library, debouncedQuery, sortKey, sortOrder]);
+
+  const doTransfer = useCallback(
+    async (sourcePaths: string[]) => {
+      if (!window.stune || sourcePaths.length === 0 || devices.length === 0) return;
+      const device = devices[transferTarget] || devices[0];
+
+      setIsTransferring(true);
+      setTransferJob({
+        id: Date.now().toString(),
+        source: 'library',
+        destination: device.mountPath,
+        tracks: [],
+        progress: 0,
+        currentFile: 'Preparing...',
+        status: 'transferring',
+      });
+
+      try {
+        await window.stune.copyTracksStructured(sourcePaths, device.mountPath);
+      } catch (err: any) {
+        console.error('Transfer failed:', err);
+      } finally {
+        setIsTransferring(false);
+      }
+    },
+    [devices, transferTarget, setTransferJob]
+  );
+
+  const doDelete = useCallback(
+    async (filePaths: string[], fromDisk: boolean) => {
+      if (!window.stune || filePaths.length === 0) return;
+      setIsDeleting(true);
+      try {
+        const result = await window.stune.deleteLibraryTracks(filePaths, fromDisk);
+        if (result.library) setLibrary(result.library);
+        clearSelection();
+        if (result.errors.length > 0) {
+          console.error('Delete errors:', result.errors);
+        }
+      } catch (err) {
+        console.error('Delete failed:', err);
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    [setLibrary, clearSelection]
+  );
+
+  // Stable per-album handlers: they take the album/track as arguments so the
+  // same function instance is passed to every memoized AlbumSection.
+  const handleTransferAlbum = useCallback(
+    (album: Album) => doTransfer(album.tracks.map((t) => t.filePath)),
+    [doTransfer]
+  );
+
+  const handleDeleteAlbum = useCallback(
+    (album: Album, fromDisk: boolean) => {
+      const paths = album.tracks.map((t) => t.filePath);
+      const msg = fromDisk
+        ? `アルバム「${album.name}」(${paths.length} 曲) をライブラリとディスクから完全に削除しますか？`
+        : `アルバム「${album.name}」(${paths.length} 曲) をライブラリから削除しますか？`;
+      if (!confirm(msg)) return;
+      doDelete(paths, fromDisk);
+    },
+    [doDelete]
+  );
+
+  const handlePlayTrack = useCallback(
+    (album: Album, track: TrackMetadata, index: number) => {
+      // Read nowPlaying at call time so this callback doesn't depend on it
+      // (otherwise every track change would give it a new identity).
+      if (useStore.getState().nowPlaying?.filePath === track.filePath) {
+        setNowPlaying(null);
+      } else {
+        playAlbum(album.tracks, index);
+      }
+    },
+    [playAlbum, setNowPlaying]
+  );
 
   if (!library) {
     return (
@@ -94,69 +197,21 @@ export default function LibraryView() {
   if (albumGroups.length === 0) {
     return (
       <div className="empty-state center">
-        <p>{searchQuery ? '該当するトラックがありません' : 'トラックがありません'}</p>
+        <p>{debouncedQuery ? '該当するトラックがありません' : 'トラックがありません'}</p>
       </div>
     );
   }
 
-  const doTransfer = async (sourcePaths: string[]) => {
-    if (!window.stune || sourcePaths.length === 0 || devices.length === 0) return;
-    const device = devices[transferTarget] || devices[0];
-
-    setIsTransferring(true);
-    setTransferJob({
-      id: Date.now().toString(),
-      source: 'library',
-      destination: device.mountPath,
-      tracks: [],
-      progress: 0,
-      currentFile: 'Preparing...',
-      status: 'transferring',
-    });
-
-    try {
-      await window.stune.copyTracksStructured(sourcePaths, device.mountPath);
-    } catch (err: any) {
-      console.error('Transfer failed:', err);
-    } finally {
-      setIsTransferring(false);
-    }
-  };
-
-  const handleTransferSelected = () => doTransfer(Array.from(selectedTracks));
-  const handleTransferAlbum = (album: Album) => doTransfer(album.tracks.map((t) => t.filePath));
-
-  const doDelete = async (filePaths: string[], fromDisk: boolean) => {
-    if (!window.stune || filePaths.length === 0) return;
-    setIsDeleting(true);
-    try {
-      const result = await window.stune.deleteLibraryTracks(filePaths, fromDisk);
-      if (result.library) setLibrary(result.library);
-      clearSelection();
-      if (result.errors.length > 0) {
-        console.error('Delete errors:', result.errors);
-      }
-    } catch (err) {
-      console.error('Delete failed:', err);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
+  // Selection-bar handlers read the Set at click time; LibraryView itself only
+  // subscribes to the selection count.
+  const handleTransferSelected = () =>
+    doTransfer(Array.from(useStore.getState().selectedTracks));
 
   const handleDeleteSelected = (fromDisk: boolean) => {
-    const paths = Array.from(selectedTracks);
+    const paths = Array.from(useStore.getState().selectedTracks);
     const msg = fromDisk
       ? `${paths.length} 曲をライブラリとディスクから完全に削除しますか？この操作は取り消せません。`
       : `${paths.length} 曲をライブラリから削除しますか？ファイルはディスクに残ります。`;
-    if (!confirm(msg)) return;
-    doDelete(paths, fromDisk);
-  };
-
-  const handleDeleteAlbum = (album: Album, fromDisk: boolean) => {
-    const paths = album.tracks.map((t) => t.filePath);
-    const msg = fromDisk
-      ? `アルバム「${album.name}」(${paths.length} 曲) をライブラリとディスクから完全に削除しますか？`
-      : `アルバム「${album.name}」(${paths.length} 曲) をライブラリから削除しますか？`;
     if (!confirm(msg)) return;
     doDelete(paths, fromDisk);
   };
@@ -184,7 +239,7 @@ export default function LibraryView() {
               <option key={d.mountPath} value={i}>{d.name}</option>
             ))}
           </select>
-          {selectedTracks.size > 0 && (
+          {selectedCount > 0 && (
             <>
               <button
                 type="button"
@@ -192,7 +247,7 @@ export default function LibraryView() {
                 onClick={handleTransferSelected}
                 disabled={isTransferring}
               >
-                選択中の {selectedTracks.size} 曲を転送
+                選択中の {selectedCount} 曲を転送
               </button>
               <button
                 type="button"
@@ -223,9 +278,9 @@ export default function LibraryView() {
       )}
 
       {/* Selection bar - when tracks selected and no device */}
-      {selectedTracks.size > 0 && devices.length === 0 && (
+      {selectedCount > 0 && devices.length === 0 && (
         <div className="selection-action-bar">
-          <span className="selection-count">{selectedTracks.size} 曲を選択中</span>
+          <span className="selection-count">{selectedCount} 曲を選択中</span>
           <div className="selection-actions">
             <button
               type="button"
@@ -259,21 +314,13 @@ export default function LibraryView() {
           <AlbumSection
             key={`${album.artist}:::${album.name}`}
             album={album}
-            selectedTracks={selectedTracks}
-            onToggleTrack={toggleTrackSelection}
-            nowPlayingPath={nowPlaying?.filePath || null}
-            onPlayTrack={(track, index) => {
-              if (nowPlaying?.filePath === track.filePath) {
-                setNowPlaying(null);
-              } else {
-                playAlbum(album.tracks, index);
-              }
-            }}
+            nowPlayingPath={nowPlayingPath}
+            onPlayTrack={handlePlayTrack}
             showTransfer={devices.length > 0}
             isTransferring={isTransferring}
-            onTransferAlbum={() => handleTransferAlbum(album)}
+            onTransferAlbum={handleTransferAlbum}
             isDeleting={isDeleting}
-            onDeleteAlbum={(fromDisk) => handleDeleteAlbum(album, fromDisk)}
+            onDeleteAlbum={handleDeleteAlbum}
           />
         ))}
       </div>
@@ -281,10 +328,8 @@ export default function LibraryView() {
   );
 }
 
-function AlbumSection({
+const AlbumSection = memo(function AlbumSection({
   album,
-  selectedTracks,
-  onToggleTrack,
   nowPlayingPath,
   onPlayTrack,
   showTransfer,
@@ -294,15 +339,13 @@ function AlbumSection({
   onDeleteAlbum,
 }: {
   album: Album;
-  selectedTracks: Set<string>;
-  onToggleTrack: (filePath: string) => void;
   nowPlayingPath: string | null;
-  onPlayTrack: (track: TrackMetadata, index: number) => void;
+  onPlayTrack: (album: Album, track: TrackMetadata, index: number) => void;
   showTransfer?: boolean;
   isTransferring?: boolean;
-  onTransferAlbum?: () => void;
+  onTransferAlbum?: (album: Album) => void;
   isDeleting?: boolean;
-  onDeleteAlbum?: (fromDisk: boolean) => void;
+  onDeleteAlbum?: (album: Album, fromDisk: boolean) => void;
 }) {
   const totalDuration = album.tracks.reduce((sum, t) => sum + t.duration, 0);
 
@@ -321,16 +364,16 @@ function AlbumSection({
           <p className="album-section-artist">{album.artist}</p>
           <p className="album-section-meta">
             {album.year && <span>{album.year}</span>}
-            {album.year && ' \u00B7 '}
+            {album.year && ' · '}
             {album.tracks.length} tracks
-            {totalDuration > 0 && ` \u00B7 ${formatDuration(totalDuration)}`}
+            {totalDuration > 0 && ` · ${formatDuration(totalDuration)}`}
           </p>
           <div className="album-section-actions">
             {showTransfer && onTransferAlbum && (
               <button
                 type="button"
                 className="btn btn-small btn-transfer-album"
-                onClick={onTransferAlbum}
+                onClick={() => onTransferAlbum(album)}
                 disabled={isTransferring}
                 title="このアルバムをWalkmanに転送"
               >
@@ -342,7 +385,7 @@ function AlbumSection({
                 <button
                   type="button"
                   className="btn btn-small btn-ghost album-delete-btn"
-                  onClick={() => onDeleteAlbum(false)}
+                  onClick={() => onDeleteAlbum(album, false)}
                   disabled={isDeleting}
                   title="このアルバムをライブラリから削除（ファイルは残る）"
                 >
@@ -351,7 +394,7 @@ function AlbumSection({
                 <button
                   type="button"
                   className="btn btn-small btn-ghost album-delete-btn btn-danger"
-                  onClick={() => onDeleteAlbum(true)}
+                  onClick={() => onDeleteAlbum(album, true)}
                   disabled={isDeleting}
                   title="このアルバムをライブラリとディスクから完全に削除"
                 >
@@ -366,31 +409,38 @@ function AlbumSection({
         {album.tracks.map((track, i) => (
           <AlbumTrackRow
             key={track.filePath}
+            album={album}
             track={track}
-            isSelected={selectedTracks.has(track.filePath)}
+            index={i}
             isPlaying={nowPlayingPath === track.filePath}
-            onToggle={() => onToggleTrack(track.filePath)}
-            onPlay={() => onPlayTrack(track, i)}
+            onPlayTrack={onPlayTrack}
           />
         ))}
       </div>
     </div>
   );
-}
+});
 
-function AlbumTrackRow({
+const AlbumTrackRow = memo(function AlbumTrackRow({
+  album,
   track,
-  isSelected,
+  index,
   isPlaying,
-  onToggle,
-  onPlay,
+  onPlayTrack,
 }: {
+  album: Album;
   track: TrackMetadata;
-  isSelected: boolean;
+  index: number;
   isPlaying: boolean;
-  onToggle: () => void;
-  onPlay: () => void;
+  onPlayTrack: (album: Album, track: TrackMetadata, index: number) => void;
 }) {
+  // Boolean selector: this row re-renders only when its own selection flips,
+  // not whenever the selectedTracks Set is replaced.
+  const isSelected = useStore((s) => s.selectedTracks.has(track.filePath));
+  const toggleTrackSelection = useStore((s) => s.toggleTrackSelection);
+  const onToggle = () => toggleTrackSelection(track.filePath);
+  const onPlay = () => onPlayTrack(album, track, index);
+
   return (
     <div
       className={`album-track-row ${isSelected ? 'selected' : ''} ${isPlaying ? 'playing' : ''}`}
@@ -410,7 +460,7 @@ function AlbumTrackRow({
         onClick={(e) => { e.stopPropagation(); onPlay(); }}
         title="Play"
       >
-        {isPlaying ? '\u23F8' : '\u25B6'}
+        {isPlaying ? '⏸' : '▶'}
       </button>
       <span className="album-track-num">
         {track.trackNumber || '-'}
@@ -425,7 +475,7 @@ function AlbumTrackRow({
       </span>
     </div>
   );
-}
+});
 
 function formatDuration(seconds: number): string {
   if (!seconds) return '--:--';
