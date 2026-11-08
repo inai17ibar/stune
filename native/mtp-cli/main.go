@@ -11,8 +11,27 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ganeshrvel/go-mtpfs/mtp"
 	"github.com/ganeshrvel/go-mtpx"
 )
+
+// device はプロセス内で共有する MTP セッション。最初のコマンドで遅延初期化し、
+// stdin が EOF になったら main で 1 回だけ Dispose する。
+var device *mtp.Device
+
+// getDevice は共有デバイスを返す。未初期化なら Initialize する。
+// 失敗はキャッシュしない（次のコマンドで再試行する）。
+func getDevice() (*mtp.Device, error) {
+	if device != nil {
+		return device, nil
+	}
+	dev, err := mtpx.Initialize(mtpx.Init{})
+	if err != nil {
+		return nil, err
+	}
+	device = dev
+	return device, nil
+}
 
 func out(obj interface{}) {
 	b, _ := json.Marshal(obj)
@@ -56,15 +75,18 @@ func main() {
 			out(map[string]string{"error": "unknown cmd: " + cmd})
 		}
 	}
+	if device != nil {
+		mtpx.Dispose(device)
+		device = nil
+	}
 }
 
 func handleListStorages() {
-	dev, err := mtpx.Initialize(mtpx.Init{})
+	dev, err := getDevice()
 	if err != nil {
 		out(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mtpx.Dispose(dev)
 	info, err := mtpx.FetchDeviceInfo(dev)
 	if err != nil {
 		out(map[string]string{"error": err.Error()})
@@ -109,12 +131,11 @@ func handleListFiles(req map[string]json.RawMessage) {
 	sid, _ := strconv.ParseUint(storageId, 10, 32)
 	storageIdU32 := uint32(sid)
 
-	dev, err := mtpx.Initialize(mtpx.Init{})
+	dev, err := getDevice()
 	if err != nil {
 		out(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mtpx.Dispose(dev)
 
 	var files []map[string]interface{}
 	_, _, _, err = mtpx.Walk(dev, storageIdU32, pathStr, false, true, false, func(objectId uint32, fi *mtpx.FileInfo, err error) error {
@@ -152,12 +173,11 @@ func handleUpload(req map[string]json.RawMessage) {
 	sid, _ := strconv.ParseUint(storageId, 10, 32)
 	storageIdU32 := uint32(sid)
 
-	dev, err := mtpx.Initialize(mtpx.Init{})
+	dev, err := getDevice()
 	if err != nil {
 		out(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mtpx.Dispose(dev)
 
 	_, _, _, err = mtpx.UploadFiles(dev, storageIdU32, []string{source}, destination, false, nil, func(*mtpx.ProgressInfo, error) error { return nil })
 	if err != nil {
@@ -180,12 +200,11 @@ func handleDelete(req map[string]json.RawMessage) {
 	sid, _ := strconv.ParseUint(storageId, 10, 32)
 	storageIdU32 := uint32(sid)
 
-	dev, err := mtpx.Initialize(mtpx.Init{})
+	dev, err := getDevice()
 	if err != nil {
 		out(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mtpx.Dispose(dev)
 
 	// Delete files one by one with proper error reporting.
 	// go-mtpx's DeleteFile silently returns nil on errors, so we resolve
@@ -229,12 +248,11 @@ func handleDownload(req map[string]json.RawMessage) {
 	sid, _ := strconv.ParseUint(storageId, 10, 32)
 	storageIdU32 := uint32(sid)
 
-	dev, err := mtpx.Initialize(mtpx.Init{})
+	dev, err := getDevice()
 	if err != nil {
 		out(map[string]string{"error": err.Error()})
 		return
 	}
-	defer mtpx.Dispose(dev)
 
 	_, _, err = mtpx.DownloadFiles(dev, storageIdU32, []string{source}, destination, false, nil, func(*mtpx.ProgressInfo, error) error { return nil })
 	if err != nil {
