@@ -11,6 +11,9 @@ const state = vi.hoisted(() => ({
   devices: [] as any[],
   save: vi.fn(),
   upload: vi.fn(async (..._args: any[]) => ({ success: true })),
+  uploadOne: vi.fn(async (..._args: any[]) => ({ ok: true })),
+  openSession: vi.fn(),
+  closeSession: vi.fn(async () => {}),
 }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, whenReady: () => Promise.resolve(), on: vi.fn(), getPath: () => os.tmpdir() },
@@ -30,6 +33,10 @@ vi.mock('../services/libraryDb', () => ({
 vi.mock('../services/mtp', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/mtp')>(),
   mtpUpload: (...args: any[]) => state.upload(...args),
+  openMtpSession: async (...args: any[]) => {
+    state.openSession(...args);
+    return { uploadOne: (...a: any[]) => state.uploadOne(...a), close: () => state.closeSession() };
+  },
 }));
 beforeAll(async () => { await import('../main'); });
 const event = () => ({ sender: state.contents, senderFrame: state.frame });
@@ -108,11 +115,14 @@ describe('registered main IPC handlers', () => {
       const fromRoot = path.relative(path.join(dir, 'MUSIC'), destination);
       expect(fromRoot === '..' || fromRoot.startsWith('..' + path.sep) || path.isAbsolute(fromRoot)).toBe(false);
       expect(await fs.readFile(destination, 'utf8')).toBe('audio');
-      state.upload.mockClear();
+      state.uploadOne.mockClear(); state.openSession.mockClear(); state.closeSession.mockClear();
       const mtp = await handler(event(), { sourcePaths: [source], deviceMountPath: 'mtp://storage' });
       expect(mtp.errors).toEqual([]);
-      expect(state.upload).toHaveBeenCalledTimes(1);
-      expect(state.upload.mock.calls[0][2]).toBe('/MUSIC/' + relative.split('/').slice(0, -1).join('/'));
+      expect(state.openSession).toHaveBeenCalledTimes(1);
+      expect(state.openSession).toHaveBeenCalledWith('mtp://storage');
+      expect(state.uploadOne).toHaveBeenCalledTimes(1);
+      expect(state.uploadOne.mock.calls[0][1]).toBe('/MUSIC/' + relative.split('/').slice(0, -1).join('/'));
+      expect(state.closeSession).toHaveBeenCalledTimes(1);
       expect(await fs.readFile(source, 'utf8')).toBe('audio');
     } finally {
       delete state.db.tracks[path.join(dir, 'song.mp3')];

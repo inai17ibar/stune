@@ -6,7 +6,7 @@ import { getConnectedWalkman, watchDevices, refreshDevices } from './services/de
 import { ejectDevice } from './services/eject';
 import { copyTracks } from './services/transfer';
 import { sanitizePathSegment, buildTransferFileName, computeSyncPlan } from './services/syncDiff';
-import { scanMtpDevice, isMtpPath, mtpUpload, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
+import { scanMtpDevice, isMtpPath, mtpUpload, openMtpSession, isMtpCliAvailable, mtpBrowse, mtpDownloadFile, getMtpDevices, mtpDeleteFiles } from './services/mtp';
 import { assertPathInside, isDevicePathInside } from './services/pathGuard';
 import { deleteLibraryTracks, validateAudioDeletion, validateMtpDeletion, isWithin } from './services/fileDeletion';
 import { secureWebContents, isAppDocument } from './services/windowSecurity';
@@ -239,64 +239,75 @@ handleTrusted(
       await fs.promises.mkdir(tmpDir, { recursive: true });
     }
 
-    for (const filePath of args.sourcePaths) {
-      const track = libraryDb.tracks[filePath];
-      const artist = sanitizePathSegment(track?.artist || 'Unknown Artist');
-      const album = sanitizePathSegment(track?.album || 'Unknown Album');
-      const origFileName = path.basename(filePath);
-      // Track-number-prefixed filename for correct playback order.
-      // Shared with syncDiff so diff detection stays in lockstep with transfer.
-      const destFileName = buildTransferFileName({
-        filePath,
-        fileName: origFileName,
-        trackNumber: track?.trackNumber,
-        discNumber: track?.discNumber,
-      });
+    // MTP: 全トラックを 1 プロセス / 1 MTP セッションで転送する
+    const mtpSession = isMtp ? await openMtpSession(args.deviceMountPath) : null;
 
-      if (mainWindow) {
-        mainWindow.webContents.send('transfer-progress', {
-          totalFiles: total,
-          completedFiles: completed,
-          currentFile: origFileName,
-          percentage: Math.round((completed / total) * 100),
-          status: 'transferring',
+    try {
+      for (const filePath of args.sourcePaths) {
+        const track = libraryDb.tracks[filePath];
+        const artist = sanitizePathSegment(track?.artist || 'Unknown Artist');
+        const album = sanitizePathSegment(track?.album || 'Unknown Album');
+        const origFileName = path.basename(filePath);
+        // Track-number-prefixed filename for correct playback order.
+        // Shared with syncDiff so diff detection stays in lockstep with transfer.
+        const destFileName = buildTransferFileName({
+          filePath,
+          fileName: origFileName,
+          trackNumber: track?.trackNumber,
+          discNumber: track?.discNumber,
         });
-      }
 
-      try {
-        if (isMtp) {
-          const destDir = `/MUSIC/${artist}/${album}`;
-          // Tags must not steer the upload out of the device MUSIC folder.
-          if (!isDevicePathInside('/MUSIC', destDir)) {
-            throw new Error(`refusing to upload outside /MUSIC: ${destDir}`);
-          }
-          // For MTP, create a symlink with the desired filename so mtp-cli uses it
-          const symlinkPath = path.join(tmpDir, destFileName);
-          try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
-          await fs.promises.symlink(filePath, symlinkPath);
-          console.log(`[transfer] MTP upload: ${destFileName} -> ${destDir} (storage: ${args.deviceMountPath})`);
-          const result = await mtpUpload(args.deviceMountPath, [symlinkPath], destDir);
-          try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
-          if (!result.success) {
-            console.error(`[transfer] MTP upload failed: ${destFileName}: ${result.error}`);
-            errors.push(`${destFileName}: ${result.error}`);
-          }
-        } else {
-          // USB mount: create directory and copy file with prefixed name
-          const musicRoot = path.join(args.deviceMountPath, 'MUSIC');
-          const destDir = path.join(musicRoot, artist, album);
-          const destPath = path.join(destDir, destFileName);
-          // Tags must not steer the copy out of the device MUSIC folder — that
-          // would write onto the Mac (e.g. /Volumes) and never show up in the
-          // sync diff, so the track would be re-transferred forever.
-          assertPathInside(musicRoot, destPath);
-          await fs.promises.mkdir(destDir, { recursive: true });
-          await fs.promises.copyFile(filePath, destPath);
+        if (mainWindow) {
+          mainWindow.webContents.send('transfer-progress', {
+            totalFiles: total,
+            completedFiles: completed,
+            currentFile: origFileName,
+            percentage: Math.round((completed / total) * 100),
+            status: 'transferring',
+          });
         }
-      } catch (err: any) {
-        errors.push(`${origFileName}: ${err.message}`);
+
+        try {
+          if (isMtp) {
+            const destDir = `/MUSIC/${artist}/${album}`;
+            // Tags must not steer the upload out of the device MUSIC folder.
+            if (!isDevicePathInside('/MUSIC', destDir)) {
+              throw new Error(`refusing to upload outside /MUSIC: ${destDir}`);
+            }
+            // For MTP, create a symlink with the desired filename so mtp-cli uses it
+            const symlinkPath = path.join(tmpDir, destFileName);
+            try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
+            await fs.promises.symlink(filePath, symlinkPath);
+            console.log(`[transfer] MTP upload: ${destFileName} -> ${destDir} (storage: ${args.deviceMountPath})`);
+            const res = mtpSession ? await mtpSession.uploadOne(symlinkPath, destDir) : null;
+            try { await fs.promises.unlink(symlinkPath); } catch { /* ignore */ }
+            // null = バイナリ未検出・セッションを開けない・プロセス異常終了・タイムアウト
+            const uploadError = !res
+              ? `MTP upload failed: no response (${destFileName})`
+              : res.error;
+            if (uploadError) {
+              console.error(`[transfer] MTP upload failed: ${destFileName}: ${uploadError}`);
+              errors.push(`${destFileName}: ${uploadError}`);
+            }
+          } else {
+            // USB mount: create directory and copy file with prefixed name
+            const musicRoot = path.join(args.deviceMountPath, 'MUSIC');
+            const destDir = path.join(musicRoot, artist, album);
+            const destPath = path.join(destDir, destFileName);
+            // Tags must not steer the copy out of the device MUSIC folder — that
+            // would write onto the Mac (e.g. /Volumes) and never show up in the
+            // sync diff, so the track would be re-transferred forever.
+            assertPathInside(musicRoot, destPath);
+            await fs.promises.mkdir(destDir, { recursive: true });
+            await fs.promises.copyFile(filePath, destPath);
+          }
+        } catch (err: any) {
+          errors.push(`${origFileName}: ${err.message}`);
+        }
+        completed++;
       }
-      completed++;
+    } finally {
+      await mtpSession?.close();
     }
 
     // Clean up temp directory

@@ -39,7 +39,8 @@ let mtpCliPath: string | null = null;
 
 /**
  * 実行中の mtp-cli プロセス。
- * mtp-cli はコマンドごとにプロセスを起動して MTP セッションを開閉するため、
+ * mtp-cli は 1 プロセス = 1 MTP セッション（単発コマンドなら 1 コマンド、
+ * MtpCliSession ならスキャン / 転送 1 回分）なので、
  * 「セッションの切断」= 実行中プロセスの終了（= デバイス側セッションの解放）となる。
  */
 const activeProcesses = new Set<ChildProcess>();
@@ -97,6 +98,229 @@ export function isMtpCliAvailable(): boolean {
   return getMtpCliPath() !== null;
 }
 
+/** mtp-cli 起動用の環境変数（同梱 dylib / Homebrew の libusb を解決させる） */
+function mtpCliEnv(bin: string): NodeJS.ProcessEnv {
+  const binDir = path.dirname(bin);
+  const libPaths = [
+    binDir,
+    '/opt/homebrew/lib',  // Apple Silicon Homebrew
+    '/usr/local/lib',     // Intel Homebrew
+  ].filter((p) => p);
+  const dyldPath = [...new Set(libPaths)].join(path.delimiter);
+  return { ...process.env, DYLD_LIBRARY_PATH: dyldPath };
+}
+
+/** mtp-cli にコマンドを 1 つ送り、応答（失敗時 null）を返す関数 */
+type MtpExecute = <T>(request: object) => Promise<T | null>;
+
+const MTP_COMMAND_TIMEOUT_MS = 120000;
+const MTP_SESSION_CLOSE_WAIT_MS = 5000;
+
+/**
+ * 1 つの mtp-cli プロセス（= 1 つのデバイス側 MTP セッション）上で
+ * 複数コマンドを順番に実行する。
+ *
+ * - コマンドは厳密に 1 つずつ実行し、1 行 JSON 応答を順に対応付ける。
+ * - タイムアウト・プロセス異常終了・応答の解析失敗のいずれでも、そのコマンドは
+ *   null を返し、以後のコマンドもすべて null を返す（行の対応付けが信用できないため）。
+ * - 例外は投げない（runMtpCommand と同じ null-on-failure 契約）。
+ * - 生存中の子プロセスは activeProcesses に登録されるので mtpDisconnect() で切断できる。
+ */
+class MtpCliSession {
+  private child: ChildProcess | null = null;
+  /** プロセスが死んだ / 応答が信用できない */
+  private dead = false;
+  /** close() が呼ばれた */
+  private closed = false;
+  private queue: Promise<unknown> = Promise.resolve();
+  private stdoutBuf = '';
+  private stderrBuf = '';
+  /** 実行中コマンドの応答待ち。null を渡すと失敗 */
+  private waiter: ((line: string | null) => void) | null = null;
+  private exited: Promise<void>;
+  private markExited: () => void = () => {};
+
+  constructor(bin: string) {
+    this.exited = new Promise((resolve) => {
+      this.markExited = resolve;
+    });
+
+    let child: ChildProcess;
+    try {
+      child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'], env: mtpCliEnv(bin) });
+    } catch (err: any) {
+      console.error('[mtp-cli] spawn error:', err?.message);
+      this.handleExit();
+      return;
+    }
+    this.child = child;
+    activeProcesses.add(child);
+
+    child.stdout?.on('data', (chunk) => this.onStdout(chunk.toString()));
+    child.stderr?.on('data', (chunk) => {
+      this.stderrBuf += chunk.toString();
+    });
+    // 死んだプロセスの stdin への書き込みは EPIPE を 'error' で投げる。未処理だと main が落ちる。
+    child.stdin?.on('error', (err) => {
+      console.error('[mtp-cli] stdin error:', err.message);
+      this.kill();
+    });
+    child.on('error', (err) => {
+      console.error('[mtp-cli] spawn error:', err.message);
+      this.handleExit();
+    });
+    child.on('close', (code) => {
+      if (this.stderrBuf) console.error('[mtp-cli] stderr:', this.stderrBuf.trim());
+      if (code !== 0 || this.waiter) {
+        console.error('[mtp-cli] session exited with code', code, this.waiter ? '(command pending)' : '');
+      }
+      this.handleExit();
+    });
+  }
+
+  /** コマンドを 1 つ実行する。前のコマンドの完了を待ってから送る。 */
+  execute<T>(request: object): Promise<T | null> {
+    const result = this.queue.then(() => this.runOne<T>(request));
+    this.queue = result;
+    return result;
+  }
+
+  /**
+   * stdin を閉じて（mtp-cli は EOF でデバイスを Dispose して終了する）終了を少し待つ。
+   * 待っても終わらなければ SIGKILL。2 回呼んでも安全。
+   */
+  async close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      try {
+        this.child?.stdin?.end();
+      } catch {
+        // すでに閉じている
+      }
+    }
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+      this.exited.then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), MTP_SESSION_CLOSE_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (timedOut) {
+      console.error('[mtp-cli] session did not exit after stdin EOF; killing');
+      this.kill();
+    }
+  }
+
+  private runOne<T>(request: object): Promise<T | null> {
+    const child = this.child;
+    if (this.dead || this.closed || !child?.stdin) return Promise.resolve(null);
+
+    return new Promise<T | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        console.error(
+          `[mtp-cli] timeout after ${MTP_COMMAND_TIMEOUT_MS / 1000}s, request:`,
+          JSON.stringify(request).slice(0, 200)
+        );
+        this.kill();
+      }, MTP_COMMAND_TIMEOUT_MS);
+
+      this.waiter = (line) => {
+        clearTimeout(timeout);
+        this.waiter = null;
+        if (line === null) {
+          resolve(null);
+          return;
+        }
+        try {
+          resolve(JSON.parse(line) as T);
+        } catch {
+          // 応答行が壊れていると以後の行の対応付けが信用できないのでセッションごと捨てる
+          console.error('[mtp-cli] JSON parse error, line:', line);
+          resolve(null);
+          this.kill();
+        }
+      };
+
+      try {
+        child.stdin!.write(JSON.stringify(request) + '\n', (err) => {
+          if (err) {
+            console.error('[mtp-cli] stdin write error:', err.message);
+            this.kill();
+          }
+        });
+      } catch (err: any) {
+        console.error('[mtp-cli] stdin write error:', err?.message);
+        this.kill();
+      }
+    });
+  }
+
+  private onStdout(text: string) {
+    this.stdoutBuf += text;
+    let nl: number;
+    while ((nl = this.stdoutBuf.indexOf('\n')) >= 0) {
+      const line = this.stdoutBuf.slice(0, nl).trim();
+      this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
+      if (!line) continue;
+      if (this.waiter) this.waiter(line);
+      else console.error('[mtp-cli] unexpected output:', line);
+    }
+  }
+
+  /** プロセスを強制終了し、実行中・以後のコマンドを null にする */
+  private kill() {
+    this.dead = true;
+    this.waiter?.(null);
+    try {
+      this.child?.kill('SIGKILL');
+    } catch {
+      // すでに終了している
+    }
+  }
+
+  private handleExit() {
+    this.dead = true;
+    if (this.child) activeProcesses.delete(this.child);
+    this.waiter?.(null);
+    this.markExited();
+  }
+}
+
+/** バイナリがあればセッションを開く。無ければ null */
+function createMtpSession(): MtpCliSession | null {
+  const bin = getMtpCliPath();
+  return bin ? new MtpCliSession(bin) : null;
+}
+
+/** MTP の 1 セッション上でアップロードを行うハンドル */
+export interface MtpUploadSession {
+  /** 1 ファイルをアップロードする。応答なし（プロセス異常等）は null */
+  uploadOne(source: string, destinationDir: string): Promise<{ ok?: boolean; error?: string } | null>;
+  close(): Promise<void>;
+}
+
+/**
+ * 1 つの mtp-cli プロセス / MTP セッションを開き、複数ファイルのアップロードに使い回す。
+ * MTP パスでない・バイナリが無い場合は null。使い終わったら必ず close() すること。
+ */
+export async function openMtpSession(mountPath: string): Promise<MtpUploadSession | null> {
+  if (!isMtpPath(mountPath)) return null;
+  const session = createMtpSession();
+  if (!session) return null;
+  const storageId = getStorageIdFromMtpPath(mountPath);
+  return {
+    uploadOne: (source, destinationDir) =>
+      session.execute<{ ok?: boolean; error?: string }>({
+        cmd: 'upload',
+        storageId,
+        source,
+        destination: destinationDir,
+      }),
+    close: () => session.close(),
+  };
+}
+
 /**
  * mtp-cli に JSON コマンドを送り、1行 JSON 応答を取得する。
  * バイナリが無い・失敗時は null を返す。
@@ -105,14 +329,7 @@ function runMtpCommand<T = unknown>(request: object): Promise<T | null> {
   const bin = getMtpCliPath();
   if (!bin) return Promise.resolve(null);
 
-  const binDir = path.dirname(bin);
-  const libPaths = [
-    binDir,
-    '/opt/homebrew/lib',  // Apple Silicon Homebrew
-    '/usr/local/lib',     // Intel Homebrew
-  ].filter((p) => p);
-  const dyldPath = [...new Set(libPaths)].join(path.delimiter);
-  const env = { ...process.env, DYLD_LIBRARY_PATH: dyldPath };
+  const env = mtpCliEnv(bin);
 
   return new Promise((resolve) => {
     const child = spawn(bin, [], {
@@ -178,8 +395,13 @@ function runMtpCommand<T = unknown>(request: object): Promise<T | null> {
  * MTP デバイスを 1 台検出し、ストレージ一覧を返す。
  * 複数台は現状未対応（1台のみ選択される前提）。
  */
-export async function getMtpDevices(): Promise<MtpDeviceInfo[]> {
-  const res = await runMtpCommand<{ storages?: MtpStorage[]; deviceName?: string; error?: string }>({
+export function getMtpDevices(): Promise<MtpDeviceInfo[]> {
+  return listMtpDevices(runMtpCommand);
+}
+
+/** getMtpDevices の本体。コマンドの実行方法（単発 / セッション）を差し替えられる */
+async function listMtpDevices(execute: MtpExecute): Promise<MtpDeviceInfo[]> {
+  const res = await execute<{ storages?: MtpStorage[]; deviceName?: string; error?: string }>({
     cmd: 'list_storages',
   });
   if (!res || res.error || !res.storages?.length) return [];
@@ -206,7 +428,7 @@ export async function getMtpDevices(): Promise<MtpDeviceInfo[]> {
 
 /**
  * MTP セッションをクリーンに切断する。
- * mtp-cli はコマンドごとに MTP セッションを開閉するので、実行中のプロセスを
+ * mtp-cli はプロセスごとに MTP セッションを開閉するので、実行中のプロセスを
  * 終了させればデバイス側のセッションが解放され、ケーブルを抜いても
  * Walkman がデータベース再構築に進める状態になる。
  * @returns 終了させたプロセス数
@@ -256,9 +478,17 @@ export async function mtpListFiles(
   mountPath: string,
   dirPath: string
 ): Promise<MtpFileInfo[]> {
+  return listFilesWith(runMtpCommand, mountPath, dirPath);
+}
+
+async function listFilesWith(
+  execute: MtpExecute,
+  mountPath: string,
+  dirPath: string
+): Promise<MtpFileInfo[]> {
   if (!isMtpPath(mountPath)) return [];
   const storageId = getStorageIdFromMtpPath(mountPath);
-  const res = await runMtpCommand<{ files?: MtpFileInfo[]; error?: string }>({
+  const res = await execute<{ files?: MtpFileInfo[]; error?: string }>({
     cmd: 'list_files',
     storageId,
     path: dirPath || '/',
@@ -282,27 +512,38 @@ export async function scanMtpDevice(mountPath: string): Promise<{
   albums: any[];
 }> {
   if (!isMtpPath(mountPath)) throw new Error('Not MTP path');
-  const devices = await getMtpDevices();
-  const storageId = getStorageIdFromMtpPath(mountPath);
-  const dev = devices.find((d) => getStorageIdFromMtpPath(d.mountPath) === storageId);
-  if (!dev) throw new Error('MTP device not found');
+  // スキャン全体（デバイス検索 + 全ディレクトリ列挙）を 1 プロセス / 1 MTP セッションで行う
+  const session = createMtpSession();
+  const execute: MtpExecute = session
+    ? (request) => session.execute(request)
+    : () => Promise.resolve(null);
+  let dev: MtpDeviceInfo | undefined;
+  const allFiles: MtpFileInfo[] = [];
+  try {
+    const devices = await listMtpDevices(execute);
+    const storageId = getStorageIdFromMtpPath(mountPath);
+    dev = devices.find((d) => getStorageIdFromMtpPath(d.mountPath) === storageId);
+    if (!dev) throw new Error('MTP device not found');
+
+    const walk = async (dir: string) => {
+      const files = await listFilesWith(execute, mountPath, dir);
+      for (const f of files) {
+        if (f.isDir) await walk(f.fullPath);
+        else if (isAudioFile(f.name)) allFiles.push(f);
+      }
+    };
+    const musicFiles = await listFilesWith(execute, mountPath, '/MUSIC');
+    if (musicFiles.length > 0) await walk('/MUSIC');
+    else await walk('/');
+  } finally {
+    await session?.close();
+  }
+
   const storage = dev.storages[0];
   const totalSpace = storage?.maxCapacity ?? 0;
   const freeSpace = storage?.freeSpaceInBytes ?? 0;
   const usedSpace = totalSpace - freeSpace;
-
   const musicPath = mountPath + '/MUSIC';
-  const allFiles: MtpFileInfo[] = [];
-  async function walk(dir: string) {
-    const files = await mtpListFiles(mountPath, dir);
-    for (const f of files) {
-      if (f.isDir) await walk(f.fullPath);
-      else if (isAudioFile(f.name)) allFiles.push(f);
-    }
-  }
-  const musicFiles = await mtpListFiles(mountPath, '/MUSIC');
-  if (musicFiles.length > 0) await walk('/MUSIC');
-  else await walk('/');
 
   const tracks = allFiles.map((f) => ({
     filePath: mountPath + '/' + f.fullPath.replace(/^\//, ''),
@@ -432,26 +673,27 @@ export async function mtpUpload(
   onProgress?: (current: number, total: number, currentFile: string) => void
 ): Promise<{ success: boolean; error?: string }> {
   if (!isMtpPath(mountPath)) return { success: false, error: 'Not MTP path' };
-  const storageId = getStorageIdFromMtpPath(mountPath);
   const total = localPaths.length;
-  for (let i = 0; i < localPaths.length; i++) {
-    // 転送「開始」の通知は完了数 i のまま送る。i + 1 を送ると最後のファイルの
-    // 開始時点で 100% = completed と表示され、転送中にケーブルを抜かれかねない。
-    onProgress?.(i, total, localPaths[i]);
-    const res = await runMtpCommand<{ error?: string }>({
-      cmd: 'upload',
-      storageId,
-      source: localPaths[i],
-      destination: destinationDir,
-    });
-    // runMtpCommand はバイナリ未検出・spawn 失敗・終了コード非 0・タイムアウト・
-    // JSON 解析失敗のいずれでも null を返す。null を無視すると 1 バイトも転送
-    // していないのに success: true を返してしまう。
-    if (!res) {
-      return { success: false, error: `MTP upload failed: no response (${path.basename(localPaths[i])})` };
+  if (total === 0) return { success: true };
+  // 全ファイルを 1 プロセス / 1 MTP セッションで送る
+  const session = await openMtpSession(mountPath);
+  try {
+    for (let i = 0; i < localPaths.length; i++) {
+      // 転送「開始」の通知は完了数 i のまま送る。i + 1 を送ると最後のファイルの
+      // 開始時点で 100% = completed と表示され、転送中にケーブルを抜かれかねない。
+      onProgress?.(i, total, localPaths[i]);
+      const res = session ? await session.uploadOne(localPaths[i], destinationDir) : null;
+      // バイナリ未検出・spawn 失敗・プロセス異常終了・タイムアウト・JSON 解析失敗の
+      // いずれでも null になる。null を無視すると 1 バイトも転送していないのに
+      // success: true を返してしまう。
+      if (!res) {
+        return { success: false, error: `MTP upload failed: no response (${path.basename(localPaths[i])})` };
+      }
+      if (res.error) return { success: false, error: res.error };
+      onProgress?.(i + 1, total, localPaths[i]);
     }
-    if (res.error) return { success: false, error: res.error };
-    onProgress?.(i + 1, total, localPaths[i]);
+    return { success: true };
+  } finally {
+    await session?.close();
   }
-  return { success: true };
 }
