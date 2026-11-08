@@ -206,7 +206,8 @@ async function walkDirectory(dir: string): Promise<string[]> {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       const subFiles = await walkDirectory(fullPath);
-      files.push(...subFiles);
+      // Push element-wise: spreading >~125k entries throws RangeError (#59).
+      for (const subFile of subFiles) files.push(subFile);
     } else if (isSupportedAudioFile(entry.name)) {
       files.push(fullPath);
     }
