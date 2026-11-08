@@ -10,7 +10,7 @@
  * `diskutil info` の Protocol フィールドをフォールバックとして使う。
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 /** mount(8) が報告するネットワークファイルシステムの種別 */
 const NETWORK_FS_TYPES = [
@@ -47,9 +47,15 @@ export function parseMountTable(output: string): Map<string, string> {
   const table = new Map<string, string>();
   for (const line of output.split('\n')) {
     // "<device> on <mount point> (<fstype>, <option>, ...)"
-    const match = line.match(/\son\s(.+?)\s\(([^,)\s]+)/);
+    //
+    // マウントポイントにはボリューム名がそのまま入るので " (" を含みうる
+    // （例: `/Volumes/WALKMAN (X)`）。種別・オプションは必ず行末の括弧なので、
+    // マウントポイントは貪欲マッチで取り、種別は行末側の括弧から読む。
+    const match = line.match(/\son\s(.+)\s\(([^()]*)\)\s*$/);
     if (!match) continue;
-    table.set(normalizePath(match[1]), match[2].trim().toLowerCase());
+    const fsType = match[2].split(',')[0].trim().toLowerCase();
+    if (!fsType) continue;
+    table.set(normalizePath(match[1]), fsType);
   }
   return table;
 }
@@ -93,15 +99,15 @@ export function readMountTable(): Map<string, string> {
 /** mount の一覧にないパスを diskutil info の Protocol で判定する */
 function isNetworkByDiskutil(mountPath: string): boolean {
   try {
-    const output = execSync(
-      `${DISKUTIL_BINARY} info ${JSON.stringify(mountPath)}`,
-      {
-        encoding: 'utf-8',
-        timeout: EXEC_TIMEOUT_MS,
-        // マウントされていないパスでは失敗するので、その旨をログに垂れ流さない
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }
-    );
+    // シェルを経由させない。マウントパスはボリューム名（= 外部のディスクが
+    // 自由に決められる文字列）なので、コマンド文字列に埋め込むと `$(...)` や
+    // バッククォートがコマンド置換として実行されてしまう。
+    const output = execFileSync(DISKUTIL_BINARY, ['info', mountPath], {
+      encoding: 'utf-8',
+      timeout: EXEC_TIMEOUT_MS,
+      // マウントされていないパスでは失敗するので、その旨をログに垂れ流さない
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
     return isNetworkProtocolOutput(output);
   } catch {
     // diskutil が扱えない = そもそもディスクではない可能性が高いが、
