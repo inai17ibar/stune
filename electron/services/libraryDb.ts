@@ -175,21 +175,86 @@ export async function loadLibraryDb(): Promise<LibraryDatabase> {
   }
 }
 
-export async function saveLibraryDb(db: LibraryDatabase): Promise<void> {
+/**
+ * Track records whose cover art has already been extracted by a save.
+ * Records are replaced wholesale when metadata is re-read, and nothing mutates
+ * `coverArt` in place (the only assignment is inside the save itself), so a
+ * processed record's coverArt cannot become a fresh data URI. Skipping them
+ * avoids re-walking every record on each save, and also stops malformed data
+ * URIs (which saveCoverArt returns as-is) from being re-processed every time.
+ */
+const coverArtProcessed = new WeakSet<TrackRecord>();
+
+async function doSaveLibraryDb(db: LibraryDatabase): Promise<void> {
   const dbPath = getDbPath();
   const dir = path.dirname(dbPath);
   await fs.promises.mkdir(dir, { recursive: true });
 
   // Extract cover art to files before saving to keep DB small
   for (const track of Object.values(db.tracks)) {
+    if (coverArtProcessed.has(track)) continue;
     if (track.coverArt && track.coverArt.startsWith('data:')) {
       track.coverArt = await saveCoverArt(track.coverArt);
     }
+    coverArtProcessed.add(track);
   }
 
+  // Compact JSON (no pretty-print indentation): the file is machine-read only
+  // (loadLibraryDb just JSON.parses it), and compact output is ~25–34% smaller
+  // and faster to write at 100k tracks (#60). Older pretty-printed files still load.
   const tmpPath = dbPath + '.tmp';
-  await fs.promises.writeFile(tmpPath, JSON.stringify(db, null, 2), 'utf-8');
+  await fs.promises.writeFile(tmpPath, JSON.stringify(db), 'utf-8');
   await fs.promises.rename(tmpPath, dbPath);
+}
+
+// ===== Save coalescing (#60) =====
+// At most one save runs at a time. Calls made while a save is in flight collapse
+// into a single follow-up run that serializes the most recent `db` passed. All
+// callers share the same in-memory db object (mutated before saving), so the
+// follow-up snapshot includes every coalesced caller's change.
+
+interface PendingSave {
+  db: LibraryDatabase;
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+}
+
+let saveInFlight: Promise<void> | null = null;
+let pendingSave: PendingSave | null = null;
+
+function runSave(db: LibraryDatabase): Promise<void> {
+  // Clear the in-flight marker and start any queued follow-up before the
+  // caller's promise settles, whether this write succeeded or failed — a
+  // failed save must not strand the follow-up.
+  const run = doSaveLibraryDb(db).finally(() => {
+    saveInFlight = null;
+    const next = pendingSave;
+    pendingSave = null;
+    if (next) {
+      runSave(next.db).then(next.resolve, next.reject);
+    }
+  });
+  saveInFlight = run;
+  return run;
+}
+
+export function saveLibraryDb(db: LibraryDatabase): Promise<void> {
+  if (!saveInFlight) {
+    return runSave(db);
+  }
+  if (pendingSave) {
+    pendingSave.db = db;
+    return pendingSave.promise;
+  }
+  let resolve!: () => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  pendingSave = { db, promise, resolve, reject };
+  return promise;
 }
 
 async function walkDirectory(dir: string): Promise<string[]> {
