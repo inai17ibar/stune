@@ -354,6 +354,76 @@ describe('scanMtpDevice', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(mtpDisconnect()).toBe(0);
   });
+
+  const storagesLine = JSON.stringify({
+    deviceName: 'NW-A306',
+    storages: [{ storageId: '65537', description: '', maxCapacity: 1000, freeSpaceInBytes: 400 }],
+  }) + '\n';
+  const dirEntry = (fullPath: string) => ({
+    objectId: 1, name: fullPath.split('/').pop(), fullPath, size: 0, isDir: true,
+  });
+  const fileEntry = (fullPath: string, size = 100) => ({
+    objectId: 2, name: fullPath.split('/').pop(), fullPath, size, isDir: false,
+  });
+
+  it('rejects (instead of returning a partial snapshot) when the session dies mid-walk', async () => {
+    const { scanMtpDevice, mtpDisconnect } = await loadMtp();
+    const tree: Record<string, any[]> = {
+      '/MUSIC': [fileEntry('/MUSIC/top.flac'), dirEntry('/MUSIC/A'), dirEntry('/MUSIC/B')],
+      '/MUSIC/B': [fileEntry('/MUSIC/B/two.flac')],
+    };
+    const requests = mockMtpCli((req) => {
+      if (req.cmd === 'list_storages') return { stdout: storagesLine };
+      // /MUSIC/A の列挙中に mtp-cli がクラッシュ → 以降のコマンドは全て null
+      if (req.path === '/MUSIC/A') return { stdout: '', code: 1 };
+      return { stdout: JSON.stringify({ files: tree[req.path] ?? [] }) + '\n' };
+    });
+
+    await expect(scanMtpDevice('mtp://65537')).rejects.toThrow(
+      'MTP session became unusable while scanning (list_files /MUSIC/A)'
+    );
+    expect(spawn).toHaveBeenCalledTimes(1);
+    // クラッシュ後に /MUSIC/B へは進まない
+    expect(requests.map((r) => r.path ?? r.cmd)).toEqual([
+      'list_storages', '/MUSIC', '/MUSIC', '/MUSIC/A',
+    ]);
+    expect(mtpDisconnect()).toBe(0);
+  });
+
+  it('rejects when the session dies at the /MUSIC probe', async () => {
+    const { scanMtpDevice } = await loadMtp();
+    const requests = mockMtpCli((req) =>
+      req.cmd === 'list_storages' ? { stdout: storagesLine } : { stdout: '', code: 1 }
+    );
+
+    await expect(scanMtpDevice('mtp://65537')).rejects.toThrow(
+      'MTP session became unusable while scanning (list_files /MUSIC)'
+    );
+    // '/' へフォールバックしない（空の「成功」スナップショットを返さない）
+    expect(requests.map((r) => r.path ?? r.cmd)).toEqual(['list_storages', '/MUSIC']);
+  });
+
+  it('falls back to walking / when /MUSIC returns a JSON error response', async () => {
+    const { scanMtpDevice } = await loadMtp();
+    const tree: Record<string, any[]> = {
+      '/': [dirEntry('/Music'), fileEntry('/song.mp3', 5)],
+      '/Music': [fileEntry('/Music/a.flac', 7)],
+    };
+    const requests = mockMtpCli((req) => {
+      if (req.cmd === 'list_storages') return { stdout: storagesLine };
+      if (req.path === '/MUSIC') return { stdout: JSON.stringify({ error: 'path not found' }) + '\n' };
+      return { stdout: JSON.stringify({ files: tree[req.path] ?? [] }) + '\n' };
+    });
+
+    const result = await scanMtpDevice('mtp://65537');
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(requests.map((r) => r.path ?? r.cmd)).toEqual(['list_storages', '/MUSIC', '/', '/Music']);
+    expect(result.tracks.map((t) => t.filePath)).toEqual([
+      'mtp://65537/Music/a.flac',
+      'mtp://65537/song.mp3',
+    ]);
+  });
 });
 
 describe('mtpUpload progress reporting', () => {

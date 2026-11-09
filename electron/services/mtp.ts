@@ -481,18 +481,30 @@ export async function mtpListFiles(
   return listFilesWith(runMtpCommand, mountPath, dirPath);
 }
 
+/**
+ * strict = true（スキャン用）: execute が null（プロセス死亡・タイムアウト等でセッションが
+ * 使えなくなった）なら throw する。共有セッションが死ぬと以降の全コマンドが null になるため、
+ * 握りつぶすと部分的/空のスナップショットが「成功」として返ってしまう。
+ * JSON の error 応答は従来どおり [] を返す（/MUSIC 無し → '/' へのフォールバックや、
+ * 単一ディレクトリのエラーでスキャン全体を止めないため）。
+ */
 async function listFilesWith(
   execute: MtpExecute,
   mountPath: string,
-  dirPath: string
+  dirPath: string,
+  strict = false
 ): Promise<MtpFileInfo[]> {
   if (!isMtpPath(mountPath)) return [];
   const storageId = getStorageIdFromMtpPath(mountPath);
+  const path = dirPath || '/';
   const res = await execute<{ files?: MtpFileInfo[]; error?: string }>({
     cmd: 'list_files',
     storageId,
-    path: dirPath || '/',
+    path,
   });
+  if (!res && strict) {
+    throw new Error(`MTP session became unusable while scanning (list_files ${path})`);
+  }
   if (!res || res.error) return [];
   return res.files ?? [];
 }
@@ -526,13 +538,13 @@ export async function scanMtpDevice(mountPath: string): Promise<{
     if (!dev) throw new Error('MTP device not found');
 
     const walk = async (dir: string) => {
-      const files = await listFilesWith(execute, mountPath, dir);
+      const files = await listFilesWith(execute, mountPath, dir, true);
       for (const f of files) {
         if (f.isDir) await walk(f.fullPath);
         else if (isAudioFile(f.name)) allFiles.push(f);
       }
     };
-    const musicFiles = await listFilesWith(execute, mountPath, '/MUSIC');
+    const musicFiles = await listFilesWith(execute, mountPath, '/MUSIC', true);
     if (musicFiles.length > 0) await walk('/MUSIC');
     else await walk('/');
   } finally {
