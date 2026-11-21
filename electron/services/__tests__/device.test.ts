@@ -4,7 +4,6 @@ import * as path from 'path';
 
 // Mock child_process（device は /sbin/mount でファイルシステム種別を調べる）
 vi.mock('child_process', () => ({
-  execSync: vi.fn(() => ''),
   execFileSync: vi.fn(() => ''),
 }));
 
@@ -23,7 +22,13 @@ import {
   watchDevices,
   stopWatchingDevices,
 } from '../device';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
+
+/** /sbin/mount と diskutil の出力を、呼ばれたバイナリごとに返し分ける */
+function mockCommands(out: { mount?: string; diskutil?: string }) {
+  vi.mocked(execFileSync).mockImplementation(((bin: string) =>
+    bin === '/sbin/mount' ? (out.mount ?? '') : (out.diskutil ?? '')) as any);
+}
 import { isMtpCliAvailable, getMtpDevices } from '../mtp';
 
 // Helper to mock /Volumes directory listing
@@ -45,7 +50,7 @@ function mockVolumes(
         `/dev/disk${i + 4}s1 on /Volumes/${e.name} (${e.fsType ?? 'apfs'}, local, nodev, nosuid)`
     ),
   ].join('\n');
-  vi.mocked(execSync).mockReturnValue(mountOutput as any);
+  mockCommands({ mount: mountOutput });
 
   // Mock readdir
   vi.spyOn(fs.promises, 'readdir').mockResolvedValue(
@@ -80,8 +85,7 @@ function mockVolumes(
 beforeEach(() => {
   vi.restoreAllMocks();
   // Default: mount 一覧は空（= ローカル扱い）
-  vi.mocked(execSync).mockReturnValue('' as any);
-  vi.mocked(execFileSync).mockReturnValue('' as any);
+  mockCommands({});
   vi.mocked(isMtpCliAvailable).mockReturnValue(false);
   resetEjectedDevices();
   stopWatchingDevices();
@@ -177,7 +181,7 @@ describe('getConnectedWalkman', () => {
 
     await getConnectedWalkman();
 
-    const commands = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
+    const commands = vi.mocked(execFileSync).mock.calls.map((c) => String(c[0]));
     expect(commands).toContain('/sbin/mount');
     expect(commands.some((c) => c.includes('stat -f'))).toBe(false);
   });
@@ -185,13 +189,11 @@ describe('getConnectedWalkman', () => {
   it('falls back to diskutil Protocol when the volume is missing from mount', async () => {
     mockVolumes([{ name: 'NAS_Share', isDir: true, hasMusicFolder: true }]);
     // mount には現れないが diskutil はネットワーク接続だと報告する
-    // （diskutil はシェルを経由せず execFileSync で叩かれる）
-    vi.mocked(execSync).mockImplementation(
-      (() => '/dev/disk3s1s1 on / (apfs, local)\n') as any
-    );
-    vi.mocked(execFileSync).mockImplementation(
-      (() => '   Protocol:                  SMB\n') as any
-    );
+    // （mount も diskutil もシェルを経由せず execFileSync で叩かれる）
+    mockCommands({
+      mount: '/dev/disk3s1s1 on / (apfs, local)\n',
+      diskutil: '   Protocol:                  SMB\n',
+    });
 
     const devices = await getConnectedWalkman();
     expect(devices).toHaveLength(0);

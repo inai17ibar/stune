@@ -10,7 +10,7 @@
  * `diskutil info` の Protocol フィールドをフォールバックとして使う。
  */
 
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 /** mount(8) が報告するネットワークファイルシステムの種別 */
 const NETWORK_FS_TYPES = [
@@ -84,7 +84,7 @@ function normalizePath(p: string): string {
 /** 現在のマウント一覧を取得する。取得できなければ空の Map を返す */
 export function readMountTable(): Map<string, string> {
   try {
-    const output = execSync(MOUNT_BINARY, {
+    const output = execFileSync(MOUNT_BINARY, [], {
       encoding: 'utf-8',
       timeout: EXEC_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],

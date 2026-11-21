@@ -3,6 +3,7 @@ import * as path from 'path';
 
 // Use Function constructor to prevent TypeScript from converting
 // dynamic import() to require() — music-metadata v11+ is ESM-only.
+// eslint-disable-next-line no-restricted-syntax -- ESM 専用パッケージを読み込むための唯一の定義
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string
 ) => Promise<typeof import('music-metadata')>;

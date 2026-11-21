@@ -11,7 +11,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
-    "setup": "bash scripts/setup.sh"
+    "setup": "bash scripts/setup.sh",
+    "lint": "eslint .",
+    "check": "npm run lint && npm run typecheck && npm test"
   },
   "keywords": [
     "music",
@@ -27,13 +29,18 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "concurrently": "^9.2.1",
     "electron": "^33.4.11",
     "electron-builder": "^26.8.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.14.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.73.0",
     "vite": "^7.3.1",
     "vitest": "^4.1.2",
     "wait-on": "^9.0.4"

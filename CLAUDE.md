@@ -47,31 +47,22 @@ scripts/
 
 ### IPC Communication
 All renderer ↔ main process communication goes through `contextBridge` in `preload.ts`.
-- Add new IPC: (1) handler in `main.ts`, (2) bridge in `preload.ts`, (3) type in `global.d.ts`
+- Add new IPC: (1) `handleTrusted()` in `main.ts`, (2) bridge in `preload.ts`, (3) type in `global.d.ts` — the contract test fails if any is missing
 
 ### State Management
 Single Zustand store (`useStore.ts`) with sections: View, Library, Device, Selection, Sort, Search, Transfer, Player.
 
 ## Critical Rules
 
-### React Hooks — DO NOT violate hook ordering
-**Every `useState`, `useMemo`, `useCallback`, `useEffect` must be called BEFORE any early return.**
-Placing a hook after an `if (...) return` causes "Rendered more hooks than during the previous render" which crashes the renderer and shows a BLACK SCREEN with no useful error.
-
-Pattern to follow:
-```tsx
-function MyComponent() {
-  // ALL hooks first
-  const [state, setState] = useState(initialValue);
-  const memoized = useMemo(() => ..., [deps]);
-
-  // THEN early returns
-  if (!data) return <Empty />;
-
-  // THEN regular logic and JSX
-  return <div>...</div>;
-}
-```
+### Enforced by lint / tests (no need to memorize)
+These rules are checked by `eslint.config.mjs` and `electron/__tests__/ipcContract.test.ts`.
+Run `npm run check` (lint + typecheck + tests) before finishing any task. Follow the error message's fix; do not add `eslint-disable` to silence it.
+- React hooks must be called before any early return (`react-hooks/rules-of-hooks`)
+- Renderer (`src/`) must not import `electron`, Node built-ins, or `electron/**`
+- Register IPC only via `handleTrusted()`; never call `ipcMain.handle/on` directly
+- IPC channels must match across `main.ts` / `preload.ts` / `global.d.ts` (contract test)
+- No `exec` / `execSync` (shell injection); use `execFile` / `execFileSync` with an argument array
+- No `new Function`; reuse `dynamicImport` in `electron/services/metadata.ts`
 
 ### ELECTRON_RUN_AS_NODE
 Claude Code / VSCode sets `ELECTRON_RUN_AS_NODE=1` in the shell environment. This makes `electron` behave as Node.js instead of a GUI app. **It must be fully removed (not just set to empty string):**
@@ -80,18 +71,14 @@ Claude Code / VSCode sets `ELECTRON_RUN_AS_NODE=1` in the shell environment. Thi
 - Setting to empty string (`ELECTRON_RUN_AS_NODE=`) does NOT work — Electron checks existence, not value
 
 ### music-metadata ESM Import
-`music-metadata` v11+ is ESM-only. Since Electron main process is compiled as CJS, use the dynamic import workaround:
-```typescript
-const dynamicImport = new Function('specifier', 'return import(specifier)');
-const mm = await dynamicImport('music-metadata');
-```
+`music-metadata` v11+ is ESM-only and the main process is CJS. Read metadata only through `electron/services/metadata.ts` (it holds the dynamic-import workaround).
 
 ## Development
 
 ### Running in dev mode
 From **Terminal.app** (not VSCode terminal):
 ```bash
-cd ~/src/stunes && bash scripts/dev.sh
+cd ~/src/stune && bash scripts/dev.sh
 ```
 Or use the npm script (also needs Terminal.app for GUI):
 ```bash
@@ -103,13 +90,11 @@ npm run electron:dev
 npm run electron:build
 ```
 
-### Type Checking
+### Checks
 ```bash
-# Renderer (React)
-npx tsc --noEmit
-
-# Electron main process
-npx tsc -p tsconfig.electron.json
+npm run check      # lint + typecheck + tests (run before finishing)
+npm run lint       # ESLint only
+npm run typecheck  # renderer + main process
 ```
 
 ## Library Database

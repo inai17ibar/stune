@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('child_process', () => ({
-  execSync: vi.fn(() => ''),
   execFileSync: vi.fn(() => ''),
 }));
 
@@ -12,7 +11,7 @@ import {
   isNetworkVolume,
   readMountTable,
 } from '../volumeInfo';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 // macOS 15 の実際の `/sbin/mount` 出力
 const REAL_MOUNT_OUTPUT = [
@@ -27,7 +26,6 @@ const REAL_MOUNT_OUTPUT = [
 ].join('\n');
 
 beforeEach(() => {
-  vi.mocked(execSync).mockReturnValue('' as any);
   vi.mocked(execFileSync).mockReturnValue('' as any);
 });
 
@@ -115,16 +113,17 @@ describe('isNetworkProtocolOutput', () => {
 
 describe('readMountTable', () => {
   it('runs /sbin/mount and parses its output', () => {
-    vi.mocked(execSync).mockReturnValue(REAL_MOUNT_OUTPUT as any);
+    vi.mocked(execFileSync).mockReturnValue(REAL_MOUNT_OUTPUT as any);
 
     const table = readMountTable();
 
-    expect(vi.mocked(execSync).mock.calls[0][0]).toBe('/sbin/mount');
+    expect(vi.mocked(execFileSync).mock.calls[0][0]).toBe('/sbin/mount');
+    expect(vi.mocked(execFileSync).mock.calls[0][1]).toEqual([]);
     expect(table.get('/Volumes/music')).toBe('smbfs');
   });
 
   it('returns an empty table when mount is unavailable', () => {
-    vi.mocked(execSync).mockImplementation(() => {
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('ENOENT');
     });
 
@@ -148,7 +147,7 @@ describe('isNetworkVolume', () => {
   });
 
   it('reads the mount table itself when none is given', () => {
-    vi.mocked(execSync).mockReturnValue(REAL_MOUNT_OUTPUT as any);
+    vi.mocked(execFileSync).mockReturnValue(REAL_MOUNT_OUTPUT as any);
 
     expect(isNetworkVolume('/Volumes/media')).toBe(true);
   });
@@ -162,19 +161,18 @@ describe('isNetworkVolume', () => {
   it('runs diskutil without a shell, passing the path as an argument', () => {
     // シェル経由だとボリューム名の $(...) がコマンド置換として実行される
     const mountPath = '/Volumes/WALKMAN ($(touch /tmp/pwned))';
-    vi.mocked(execSync).mockClear();
     vi.mocked(execFileSync).mockClear();
 
     isNetworkVolume(mountPath, new Map());
 
-    expect(vi.mocked(execSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledTimes(1);
     const [binary, args] = vi.mocked(execFileSync).mock.calls[0];
     expect(binary).toBe('/usr/sbin/diskutil');
     expect(args).toEqual(['info', mountPath]);
   });
 
   it('does not exclude a volume when neither mount nor diskutil knows it', () => {
-    vi.mocked(execSync).mockImplementation(() => {
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('ENOENT');
     });
     vi.mocked(execFileSync).mockImplementation(() => {
