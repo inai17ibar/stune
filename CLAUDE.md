@@ -78,7 +78,7 @@ Claude Code / VSCode sets `ELECTRON_RUN_AS_NODE=1` in the shell environment. Thi
 ### Running in dev mode
 From **Terminal.app** (not VSCode terminal):
 ```bash
-cd ~/src/stunes && bash scripts/dev.sh
+cd ~/src/stune && bash scripts/dev.sh
 ```
 Or use the npm script (also needs Terminal.app for GUI):
 ```bash
