@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { scanDevice } from './services/library';
 import { getConnectedWalkman, watchDevices, refreshDevices } from './services/device';
 import { ejectDevice } from './services/eject';
@@ -97,6 +98,7 @@ app.on('activate', () => {
 });
 
 function handleTrusted(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any) {
+  // eslint-disable-next-line no-restricted-syntax -- ここが唯一の ipcMain 登録箇所
   ipcMain.handle(channel, (event, ...args) => {
     const appUrl = isDev ? 'http://localhost:5173/' : pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
     if (!mainWindow || event.sender !== mainWindow.webContents ||
@@ -523,7 +525,6 @@ handleTrusted('mtp-browse', async (_event, args: { storageId: string; path: stri
 
 // Download file from MTP device to temp directory for playback
 handleTrusted('mtp-download-file', async (_event, args: { storageId: string; remotePath: string }) => {
-  const os = require('os');
   const tempDir = path.join(os.tmpdir(), 'stune-playback');
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
   return await mtpDownloadFile(args.storageId, args.remotePath, tempDir);
